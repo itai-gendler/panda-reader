@@ -14,7 +14,9 @@ Choose Miniflux, enter the instance URL and an API token, then connect. Categori
 
 ## FreshRSS
 
-Choose FreshRSS, enter the instance URL, username, and API password, then connect. The API password is configured in FreshRSS account settings. Panda Reader uses the Google Reader-compatible API. Subscription listing/add/remove, article pagination, read/star state, and OPML are available through that API. FreshRSS's separate Fever API is not used.
+Choose FreshRSS, enter the API endpoint, username, and API password, then connect. The API password is configured in FreshRSS account settings. Panda Reader connects through the Google Reader-compatible API at `/api/greader.php`. Subscription listing/add/remove, article pagination, read/star state, and OPML use this API; FreshRSS's separate Fever API is not used.
+
+FreshRSS is the implementation tested with Panda Reader. Other services that implement the same Google Reader-compatible API are expected to work, but have not been tested.
 
 Provider settings are stored separately per provider. A disconnected provider's cached library remains available when selected, but server operations require reconnecting. Different providers may contain the same feed URL without sharing articles or reading state.
 

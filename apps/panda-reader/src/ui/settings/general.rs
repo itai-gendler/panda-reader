@@ -175,6 +175,17 @@ impl Settings {
                 })
                 .child(div().pt_4().pb_2().text_sm().child(owner.t("Server URL")))
                 .child(text_input(&self.provider_url_input))
+                .when(self.library_source == LibrarySource::FreshRss, |view| {
+                    view.child(
+                        div()
+                            .pt_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(owner.t(
+                                "Connects through the Google Reader API.",
+                            )),
+                    )
+                })
                 .when(self.library_source == LibrarySource::FreshRss, |view| view
                     .child(div().pt_4().pb_2().text_sm().child(owner.t("Username")))
                     .child(text_input(&self.provider_username_input)))

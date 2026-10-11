@@ -81,7 +81,11 @@ impl Settings {
         let add_input = cx.new(|cx| InputState::new(window, cx).placeholder(add_placeholder));
         let provider_url_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("https://provider.example.org")
+                .placeholder(if library_source == LibrarySource::FreshRss {
+                    "https://freshrss.example.org/api/greader.php"
+                } else {
+                    "https://provider.example.org"
+                })
                 .default_value(selected_settings.map_or("", |value| value.endpoint.as_str()))
         });
         let provider_username_input = cx.new(|cx| {

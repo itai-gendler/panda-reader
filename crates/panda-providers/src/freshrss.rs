@@ -545,7 +545,7 @@ fn parse_entry(row: &Value) -> anyhow::Result<Option<RemoteEntry>> {
         .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
         .map(|time| time.to_rfc3339());
     Ok(Some(RemoteEntry {
-        id: numeric_id(id)?,
+        id: numeric_item_id(id)?,
         feed_id: numeric_id(feed_id)?,
         title: row
             .get("title")
@@ -570,6 +570,21 @@ fn parse_entry(row: &Value) -> anyhow::Result<Option<RemoteEntry>> {
             .map(|time| time.to_rfc3339()),
         revision: row.get("updated").map(Value::to_string),
     }))
+}
+
+fn numeric_item_id(value: &str) -> anyhow::Result<i64> {
+    let suffix = value
+        .rsplit('/')
+        .next()
+        .context("FreshRSS item is missing its numeric ID")?;
+    // FreshRSS formats its Google Reader item IDs as 64-bit hexadecimal
+    // values. Feed IDs remain decimal, so only the item ID uses this parser.
+    if suffix.len() == 16 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        let value =
+            u64::from_str_radix(suffix, 16).context("FreshRSS item ID is not valid hexadecimal")?;
+        return i64::try_from(value).context("FreshRSS item ID exceeds the supported range");
+    }
+    numeric_id(value)
 }
 
 fn collect_urls(outline: &opml::Outline, output: &mut Vec<String>) {
@@ -672,6 +687,18 @@ mod tests {
         assert_eq!(entry.feed_id, 4);
         assert_eq!(entry.status, "read");
         assert!(entry.starred);
+    }
+
+    #[test]
+    fn parses_freshrss_hexadecimal_item_ids() {
+        let item = serde_json::json!({
+            "id":"tag:google.com,2005:reader/item/00065d86fd6fc5eb",
+            "title":"FreshRSS item",
+            "origin":{"streamId":"feed/4"}
+        });
+        let entry = parse_entry(&item).unwrap().unwrap();
+        assert_eq!(entry.id, 0x00065d86fd6fc5eb_i64);
+        assert_eq!(entry.feed_id, 4);
     }
 
     #[test]
