@@ -20,6 +20,7 @@ use std::time::Duration;
 
 const MAX_FEED_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ARTICLE_PAGE_BYTES: usize = 20 * 1024 * 1024;
+const CURRENT_SCHEMA_VERSION: i64 = 6;
 use url::Url;
 
 pub struct Store {
@@ -153,7 +154,7 @@ impl Store {
         };
         let needs_foreign_key_toggle =
             has_legacy_feeds_table && !feed_columns.iter().any(|column| column == "workspace");
-        if schema_version < 5 && has_existing_schema {
+        if schema_version < CURRENT_SCHEMA_VERSION && has_existing_schema {
             connection.query_row("PRAGMA wal_checkpoint(FULL)", [], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -440,7 +441,34 @@ impl Store {
             )?;
             connection.pragma_update(None, "user_version", 5)?;
         }
-        if schema_version < 5 {
+        // Token usage columns were added after schema version 4 without a
+        // dedicated migration version. Repair databases that already report
+        // version 4 or 5, and keep the operation safe to repeat.
+        if schema_version < 6 {
+            connection.execute_batch(
+                "CREATE TABLE IF NOT EXISTS translation_usage(
+                    day TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    requests INTEGER NOT NULL DEFAULT 0,
+                    characters INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(day,provider)
+                );",
+            )?;
+            ensure_column(
+                &connection,
+                "translation_usage",
+                "input_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                &connection,
+                "translation_usage",
+                "output_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+        }
+        if schema_version < CURRENT_SCHEMA_VERSION {
             let integrity: String =
                 connection.query_row("PRAGMA integrity_check(1)", [], |row| row.get(0))?;
             if integrity != "ok" {
@@ -479,7 +507,7 @@ impl Store {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let schema_version: i64 =
             connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if schema_version < 5 {
+        if schema_version < CURRENT_SCHEMA_VERSION {
             anyhow::bail!("database schema migration is required before opening the writer");
         }
         let client = shared_http_client();
@@ -2347,7 +2375,8 @@ impl Store {
         } else {
             let resolved = resolve_url(&url)?;
             let referer = (resolved != url).then_some(url.as_str());
-            let raw = fetch_html(&self.client, &resolved, referer).await?;
+            let plugin_resolved = resolved != url;
+            let raw = fetch_html(&self.client, &resolved, referer, plugin_resolved).await?;
             (resolved, raw)
         };
         let mut cache_hasher = Sha256::new();
@@ -2884,29 +2913,40 @@ fn resolve_url(base: &str, value: &str) -> String {
 
 const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
 
-async fn fetch_html(client: &Client, url: &str, referer: Option<&str>) -> anyhow::Result<String> {
-    let mut request = client
-        .get(url)
-        .header(reqwest::header::USER_AGENT, BROWSER_UA)
-        .header(
-            reqwest::header::ACCEPT,
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        )
-        .header(
-            reqwest::header::ACCEPT_LANGUAGE,
-            "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        );
-    if let Some(referer) = referer {
-        request = request.header(reqwest::header::REFERER, referer);
-    }
-    let response = request.send().await?;
-    let status = response.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        anyhow::bail!(
-            "Publisher blocked automated article downloads ({status}). Open the original page instead."
-        );
-    }
-    let response = response.error_for_status()?;
+const MAX_ARTICLE_REDIRECTS: usize = 10;
+
+async fn fetch_html(
+    client: &Client,
+    url: &str,
+    referer: Option<&str>,
+    validate_destination: bool,
+) -> anyhow::Result<String> {
+    let response = if validate_destination {
+        fetch_public_destination(url, referer).await?
+    } else {
+        let mut request = client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, BROWSER_UA)
+            .header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .header(
+                reqwest::header::ACCEPT_LANGUAGE,
+                "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            );
+        if let Some(referer) = referer {
+            request = request.header(reqwest::header::REFERER, referer);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            anyhow::bail!(
+                "Publisher blocked automated article downloads ({status}). Open the original page instead."
+            );
+        }
+        response.error_for_status()?
+    };
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -2927,6 +2967,152 @@ async fn fetch_html(client: &Client, url: &str, referer: Option<&str>) -> anyhow
     let encoding =
         encoding_rs::Encoding::for_label(charset.as_bytes()).unwrap_or(encoding_rs::UTF_8);
     Ok(encoding.decode(&bytes).0.into_owned())
+}
+
+async fn fetch_public_destination(
+    url: &str,
+    referer: Option<&str>,
+) -> anyhow::Result<reqwest::Response> {
+    let mut current_url = Url::parse(url)?;
+    for redirect_count in 0..=MAX_ARTICLE_REDIRECTS {
+        let pinned_host = pin_public_destination(&current_url).await?;
+        let mut client = Client::builder()
+            .timeout(Duration::from_secs(25))
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some((host, addresses)) = pinned_host {
+            client = client.resolve_to_addrs(&host, &addresses);
+        }
+        let client = client.build()?;
+        let mut request = client
+            .get(current_url.clone())
+            .header(reqwest::header::USER_AGENT, BROWSER_UA)
+            .header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .header(
+                reqwest::header::ACCEPT_LANGUAGE,
+                "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            );
+        if let Some(referer) = referer {
+            request = request.header(reqwest::header::REFERER, referer);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            anyhow::bail!(
+                "Publisher blocked automated article downloads ({status}). Open the original page instead."
+            );
+        }
+        if status.is_redirection() {
+            if redirect_count == MAX_ARTICLE_REDIRECTS {
+                anyhow::bail!("article page exceeded the redirect limit");
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .context("article redirect has no valid Location header")?;
+            current_url = article_redirect_url(&current_url, location)?;
+            continue;
+        }
+        return Ok(response.error_for_status()?);
+    }
+    anyhow::bail!("article page exceeded the redirect limit")
+}
+
+fn article_redirect_url(current: &Url, location: &str) -> anyhow::Result<Url> {
+    let next = current.join(location)?;
+    if next.scheme() != "http" && next.scheme() != "https" {
+        anyhow::bail!("article redirect used an unsupported URL scheme");
+    }
+    if current.scheme() == "https" && next.scheme() == "http" {
+        anyhow::bail!("article redirect attempted to downgrade HTTPS to HTTP");
+    }
+    Ok(next)
+}
+
+async fn pin_public_destination(
+    url: &Url,
+) -> anyhow::Result<Option<(String, Vec<std::net::SocketAddr>)>> {
+    use std::net::IpAddr;
+
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        anyhow::bail!("article URL is not a safe HTTP destination");
+    }
+    let host = url.host().context("article URL has no host")?;
+    let port = url
+        .port_or_known_default()
+        .context("article URL has no port")?;
+    match host {
+        url::Host::Domain(domain) => {
+            let domain = domain.to_owned();
+            let lookup_domain = domain.clone();
+            let addresses: Vec<_> = tokio::task::spawn_blocking(move || {
+                use std::net::ToSocketAddrs as _;
+                (lookup_domain.as_str(), port)
+                    .to_socket_addrs()
+                    .map(|addresses| addresses.collect())
+            })
+            .await??;
+            if addresses.is_empty() || addresses.iter().any(|address| !is_public_ip(address.ip())) {
+                anyhow::bail!("article URL resolves to a non-public network address");
+            }
+            Ok(Some((domain.to_owned(), addresses)))
+        }
+        url::Host::Ipv4(address) => {
+            if !is_public_ip(IpAddr::V4(address)) {
+                anyhow::bail!("article URL resolves to a non-public network address");
+            }
+            Ok(None)
+        }
+        url::Host::Ipv6(address) => {
+            if !is_public_ip(IpAddr::V6(address)) {
+                anyhow::bail!("article URL resolves to a non-public network address");
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn is_public_ip(address: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+
+    match address {
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            let first_two = u16::from(octets[0]) << 8 | u16::from(octets[1]);
+            !(address.is_private()
+                || address.is_loopback()
+                || address.is_link_local()
+                || address.is_broadcast()
+                || address.is_unspecified()
+                || address.is_multicast()
+                || octets[0] == 0
+                || octets[0] >= 240
+                || (0x6440..=0x647f).contains(&first_two) // Shared address space, 100.64.0.0/10.
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+                || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+                || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113))
+        }
+        IpAddr::V6(address) => {
+            let segments = address.segments();
+            let global_unicast = segments[0] & 0xe000 == 0x2000;
+            global_unicast
+                && !(address.is_loopback()
+                    || address.is_unspecified()
+                    || address.is_multicast()
+                    || (segments[0] == 0x2001
+                        && (segments[1] & 0xfe00 == 0 || segments[1] == 0x0db8))
+                    || segments[0] == 0x2002)
+        }
+    }
 }
 
 async fn read_response_limited(
@@ -2984,6 +3170,57 @@ mod tests {
     use panda_core::Scope;
 
     #[test]
+    fn article_fetch_only_allows_public_ip_destinations() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "192.0.2.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "2001:db8::1",
+        ] {
+            assert!(!is_public_ip(address.parse().unwrap()), "{address}");
+        }
+        for address in ["1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(is_public_ip(address.parse().unwrap()), "{address}");
+        }
+    }
+
+    #[tokio::test]
+    async fn article_fetch_rejects_loopback_and_pins_public_dns_results() {
+        assert!(
+            pin_public_destination(&Url::parse("http://127.0.0.1/").unwrap())
+                .await
+                .is_err()
+        );
+        assert!(
+            pin_public_destination(&Url::parse("http://[::1]/").unwrap())
+                .await
+                .is_err()
+        );
+        let pinned = pin_public_destination(&Url::parse("http://localhost/").unwrap()).await;
+        assert!(pinned.is_err());
+    }
+
+    #[tokio::test]
+    async fn article_redirect_destinations_use_the_same_public_address_check() {
+        let current = Url::parse("http://example.com/story").unwrap();
+        let redirected = article_redirect_url(&current, "http://127.0.0.1/admin").unwrap();
+        assert!(pin_public_destination(&redirected).await.is_err());
+        assert!(
+            article_redirect_url(
+                &Url::parse("https://example.com").unwrap(),
+                "http://example.com"
+            )
+            .is_err()
+        );
+        assert!(article_redirect_url(&current, "file:///etc/passwd").is_err());
+    }
+
+    #[test]
     fn migration_is_versioned_and_read_connections_do_not_change_schema() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("migration.sqlite3");
@@ -2992,7 +3229,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
         connection
             .execute(
                 "UPDATE article_fts_state SET last_article_id=99,complete=1 WHERE id=1",
@@ -3023,7 +3260,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
         let before: i64 = connection
             .query_row("SELECT COUNT(*) FROM sqlite_schema", [], |row| row.get(0))
             .unwrap();
@@ -3036,6 +3273,58 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sqlite_schema", [], |row| row.get(0))
             .unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn migration_repairs_translation_usage_columns_on_existing_version_five_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("translation-usage-v5.sqlite3");
+        Store::migrate(&path).unwrap();
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO translation_usage(day,provider,requests,characters)
+                 VALUES('2026-10-11','llm',2,120)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "BEGIN;
+                 ALTER TABLE translation_usage RENAME TO translation_usage_with_tokens;
+                 CREATE TABLE translation_usage(
+                    day TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    requests INTEGER NOT NULL DEFAULT 0,
+                    characters INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(day,provider)
+                 );
+                 INSERT INTO translation_usage(day,provider,requests,characters)
+                    SELECT day,provider,requests,characters FROM translation_usage_with_tokens;
+                 DROP TABLE translation_usage_with_tokens;
+                 PRAGMA user_version=5;
+                 COMMIT;",
+            )
+            .unwrap();
+        drop(connection);
+
+        Store::migrate(&path).unwrap();
+        let store = Store::open(&path).unwrap();
+        store
+            .record_translation_usage_with_tokens("2026-10-11", "llm", 1, 30, 17, 9)
+            .unwrap();
+        let usage = store.translation_usage().unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(
+            (
+                usage[0].requests,
+                usage[0].characters,
+                usage[0].input_tokens,
+                usage[0].output_tokens
+            ),
+            (3, 150, 17, 9)
+        );
     }
 
     #[tokio::test]
