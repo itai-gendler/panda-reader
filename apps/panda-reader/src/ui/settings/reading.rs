@@ -33,8 +33,8 @@ impl Settings {
             (format!("{modifier}+R"), "Refresh feeds"),
             (format!("Shift+{modifier}+R"), "Re-fetch current article"),
             (format!("{modifier}+B"), "Toggle sidebar"),
-            (format!("{modifier}+[ / ↑"), "Previous article"),
-            (format!("{modifier}+] / ↓"), "Next article"),
+            (format!("{modifier}+["), "Previous article"),
+            (format!("{modifier}+]"), "Next article"),
             (format!("{modifier}+/"), "Keyboard shortcuts"),
         ];
         if cfg!(target_os = "macos") {
@@ -52,7 +52,7 @@ impl Settings {
                     ("l", "Toggle Read Later"),
                     ("r", "Refresh feeds"),
                     ("o", "Open original"),
-                    ("x", "Mark all as read"),
+                    ("Shift+X", "Mark all as read"),
                 ]
                 .into_iter()
                 .map(|(keys, label)| (keys.into(), label)),

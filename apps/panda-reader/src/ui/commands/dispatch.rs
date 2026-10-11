@@ -187,7 +187,16 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn vim_allowed(&self, window: &Window, cx: &App) -> bool {
-        self.preferences.vim_navigation && !self.palette.open && !self.typing_in_input(window, cx)
+        self.preferences.vim_navigation && self.reader_shortcuts_allowed(window, cx)
+    }
+
+    pub(in crate::ui) fn reader_shortcuts_allowed(&self, window: &Window, cx: &App) -> bool {
+        !self.palette.open
+            && !self.settings.open
+            && self.editor.feed_id.is_none()
+            && self.quote_poster.is_none()
+            && self.reader.image_viewer_url.is_none()
+            && !self.typing_in_input(window, cx)
     }
 
     pub(in crate::ui) fn handle_chord(
@@ -197,6 +206,22 @@ impl ReaderWindow {
         cx: &mut Context<Self>,
     ) {
         if self.palette.open && !matches!(kind, CommandKind::TogglePalette) {
+            return;
+        }
+        if matches!(
+            kind,
+            CommandKind::NextArticle
+                | CommandKind::PreviousArticle
+                | CommandKind::NextUnread
+                | CommandKind::PreviousUnread
+                | CommandKind::ToggleRead
+                | CommandKind::ToggleStar
+                | CommandKind::ToggleLater
+                | CommandKind::OpenOriginal
+                | CommandKind::ForceRefreshArticle
+                | CommandKind::MarkAllRead
+        ) && !self.reader_shortcuts_allowed(window, cx)
+        {
             return;
         }
         self.run_command(kind, window, cx);

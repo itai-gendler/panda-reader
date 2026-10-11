@@ -17,6 +17,7 @@ use gpui_kit::*;
 
 pub(in crate::ui) struct PaletteState {
     _subscriptions: Vec<Subscription>,
+    previous_focus: Option<WeakFocusHandle>,
     pub open: bool,
     pub query: String,
     pub selected: usize,
@@ -31,6 +32,7 @@ impl PaletteState {
         });
         Self {
             open: false,
+            previous_focus: None,
             query: String::new(),
             selected: 0,
             input,
@@ -61,6 +63,7 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette.previous_focus = window.focused(cx).map(|focus| focus.downgrade());
         self.palette.open = true;
         self.palette.query.clear();
         self.palette.selected = 0;
@@ -78,7 +81,16 @@ impl ReaderWindow {
         let _ = self.palette.input.update(cx, |input, cx| {
             input.set_value("", window, cx);
         });
-        self.focus_handle.focus(window, cx);
+        if let Some(focus) = self
+            .palette
+            .previous_focus
+            .take()
+            .and_then(|focus| focus.upgrade())
+        {
+            focus.focus(window, cx);
+        } else {
+            self.focus_handle.focus(window, cx);
+        }
         cx.notify();
     }
 

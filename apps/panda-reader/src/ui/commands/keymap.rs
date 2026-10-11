@@ -57,9 +57,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-]", NextArticle, None),
         KeyBinding::new("secondary-[", PreviousArticle, None),
         KeyBinding::new("secondary-/", ShowKeyboardShortcuts, None),
-        KeyBinding::new("down", NextArticle, Some("Reader")),
-        KeyBinding::new("up", PreviousArticle, Some("Reader")),
-        // Vim-style (handlers no-op when typing or vim_navigation is off)
+        // Vim-style (handlers no-op outside the reader or when vim_navigation is off)
         KeyBinding::new("j", VimNextArticle, Some("Reader")),
         KeyBinding::new("k", VimPreviousArticle, Some("Reader")),
         KeyBinding::new("shift-j", VimNextUnread, Some("Reader")),
@@ -69,7 +67,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("l", VimToggleLater, Some("Reader")),
         KeyBinding::new("r", VimRefresh, Some("Reader")),
         KeyBinding::new("o", VimOpenOriginal, Some("Reader")),
-        KeyBinding::new("x", VimMarkAllRead, Some("Reader")),
+        KeyBinding::new("shift-x", VimMarkAllRead, Some("Reader")),
         KeyBinding::new("shift-/", VimShowHelp, Some("Reader")),
         // Printable Vim keys must reach text inputs. A no-op in the action
         // handler is too late because the key binding has already consumed it.
@@ -119,23 +117,13 @@ pub fn bind_keys(cx: &mut App) {
             Some("Input"),
         ),
         KeyBinding::new(
-            "x",
+            "shift-x",
             Unbind("panda_reader::VimMarkAllRead".into()),
             Some("Input"),
         ),
         KeyBinding::new(
             "shift-/",
             Unbind("panda_reader::VimShowHelp".into()),
-            Some("Input"),
-        ),
-        KeyBinding::new(
-            "down",
-            Unbind("panda_reader::NextArticle".into()),
-            Some("Input"),
-        ),
-        KeyBinding::new(
-            "up",
-            Unbind("panda_reader::PreviousArticle".into()),
             Some("Input"),
         ),
         // Palette chrome
