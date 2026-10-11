@@ -380,6 +380,11 @@ async fn sync_provider_async(
     kind: ProviderKind,
     detailed_logging: &AtomicBool,
 ) -> Result<usize, String> {
+    // Account detection, staging writes, pagination, and promotion must form one
+    // serialized operation: every sync for this workspace shares one staging slot.
+    let remote_lock = remote_mark_lock(workspace);
+    let _guard = remote_lock.lock().await;
+
     let stage_started = Instant::now();
     let identity = match remote.identity().await {
         Ok(identity) => identity,
@@ -504,8 +509,6 @@ async fn sync_provider_async(
         .map_err(|e| e.to_string())?;
 
     if !reset {
-        let remote_lock = remote_mark_lock(workspace);
-        let _guard = remote_lock.lock().await;
         flush_remote_marks(path, workspace, database, remote).await?;
     }
 
