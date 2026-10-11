@@ -167,8 +167,8 @@ impl AppServices {
                         active_workspace: worker_workspace,
                         detailed_sync_logging: worker_detailed_sync_logging,
                         body_cache,
-                        title_translation_lock: Arc::new(Mutex::new(())),
                         title_translation_attempted: Arc::new(Mutex::new(HashMap::new())),
+                        provider_connection_generations: Arc::new(Mutex::new(HashMap::new())),
                         translation_jobs: Arc::new(Mutex::new(HashMap::new())),
                         latest_translation: Arc::new(Mutex::new(HashMap::new())),
                         article_work_cancellations: worker_article_work_cancellations,
@@ -245,8 +245,8 @@ pub struct WorkerState {
     pub active_workspace: Arc<RwLock<String>>,
     pub detailed_sync_logging: Arc<AtomicBool>,
     pub body_cache: Arc<Mutex<RenderCache>>,
-    pub title_translation_lock: Arc<Mutex<()>>,
     pub title_translation_attempted: Arc<Mutex<HashMap<String, std::time::Instant>>>,
+    pub provider_connection_generations: Arc<Mutex<HashMap<ProviderKind, u64>>>,
     pub translation_jobs: Arc<
         Mutex<
             HashMap<
@@ -699,6 +699,64 @@ pub(super) fn try_job<T: Send + 'static>(
                 let _ = reply.send(Err(message.to_owned()));
             }
             false
+        }
+    }
+}
+
+/// Title batches use a dedicated serial queue so they cannot occupy the general
+/// worker pool while waiting for another title translation to finish.
+pub(super) fn title_job<T: Send + 'static>(
+    reply: oneshot::Sender<Result<T, String>>,
+    run: impl FnOnce(&tokio::runtime::Runtime) -> Result<T, String> + Send + 'static,
+) {
+    type BackgroundJob = Box<dyn FnOnce(&tokio::runtime::Runtime) + Send + 'static>;
+    static TITLE_JOBS: OnceLock<SyncSender<BackgroundJob>> = OnceLock::new();
+    let sender = TITLE_JOBS.get_or_init(|| {
+        let (sender, receiver) = std_mpsc::sync_channel::<BackgroundJob>(128);
+        thread::Builder::new()
+            .name("panda-reader-title-translation".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to start title translation runtime");
+                while let Ok(job) = receiver.recv() {
+                    job(&runtime);
+                }
+            })
+            .expect("failed to start title translation worker");
+        sender
+    });
+
+    let reply_slot = Arc::new(Mutex::new(Some(reply)));
+    let worker_reply = reply_slot.clone();
+    let task: BackgroundJob = Box::new(move |runtime| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(runtime)))
+            .unwrap_or_else(|panic| {
+                Err(format!(
+                    "Background operation panicked: {}",
+                    panic_message(&*panic)
+                ))
+            });
+        if let Some(reply) = lock_mutex(&worker_reply, "title translation reply").take() {
+            let _ = reply.send(result);
+        }
+    });
+    match sender.try_send(task) {
+        Ok(()) => {}
+        Err(error) => {
+            let (task, message) = match error {
+                TrySendError::Full(task) => {
+                    (task, "Title translation queue is full; try again shortly")
+                }
+                TrySendError::Disconnected(task) => {
+                    (task, "Title translation worker is unavailable")
+                }
+            };
+            drop(task);
+            if let Some(reply) = lock_mutex(&reply_slot, "title translation reply").take() {
+                let _ = reply.send(Err(message.to_owned()));
+            }
         }
     }
 }

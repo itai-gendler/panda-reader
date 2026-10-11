@@ -476,7 +476,7 @@ impl ReaderWindow {
         if self.reader.has_translation_for_ui(
             article,
             &self.preferences,
-            &self.translator_config.cache_id(),
+            &self.translator_config.revision_cache_id(),
         ) {
             self.reader.showing_translation = true;
             self.request_prepared_body(cx);
@@ -661,6 +661,7 @@ impl ReaderWindow {
         let (reply, response) = oneshot::channel();
         self.services.send(Command::MarkAllRead {
             scope: self.list.scope.clone(),
+            search: self.list.search.clone(),
             reply,
         });
         self.set_busy(self.t("Marking all as read…"));

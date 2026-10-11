@@ -209,6 +209,17 @@ impl TranslatorConfig {
             Provider::LibreTranslate => "libretranslate".into(),
         }
     }
+
+    /// Backend identity used by article translation cache revisions.
+    pub fn revision_cache_id(&self) -> String {
+        let backend = self.cache_id();
+        match self.provider {
+            Provider::OpenAiCompatible | Provider::Anthropic | Provider::Gemini => {
+                format!("{backend}:{}", LlmTranslator::prompt_revision())
+            }
+            _ => backend,
+        }
+    }
 }
 
 pub(crate) fn translation_backend_cache_id(id: &str, url: &str, model: &str) -> String {

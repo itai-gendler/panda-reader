@@ -129,7 +129,7 @@ impl ArticleView {
             } else if self.has_translation_for_ui(
                 article,
                 &owner.preferences,
-                &owner.translator_config.cache_id(),
+                &owner.translator_config.revision_cache_id(),
             ) {
                 owner.t("Show translation")
             } else {

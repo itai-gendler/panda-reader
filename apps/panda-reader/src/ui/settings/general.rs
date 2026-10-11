@@ -3,6 +3,7 @@ use crate::app::preferences::LibrarySource;
 use crate::ui::components::{BundledIcon, bundled_icon, text_input};
 use crate::ui::i18n;
 use crate::ui::window::ReaderWindow;
+use gpui_kit::base::Disableable as _;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _,
@@ -210,6 +211,7 @@ impl Settings {
                             row.child(
                                 Button::new("disconnect-provider").small()
                                     .ghost()
+                                    .disabled(self.is_connecting)
                                     .label(owner.t("Disconnect"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.disconnect_provider(cx)

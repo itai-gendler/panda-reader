@@ -5,7 +5,7 @@ use super::command::{TitleTranslationInput, TitleTranslationOutcome, TitleTransl
 use super::database::DbWriter;
 use super::worker::{
     TranslationJobKey, WorkerState, finish_article_work, job, lock_mutex, read_lock,
-    register_article_work, remote_mark_lock, try_job, wait_for_article_work_cancel,
+    register_article_work, remote_mark_lock, title_job, try_job, wait_for_article_work_cancel,
 };
 use panda_core::{
     ArticleCursor, CanonicalArticle, CanonicalHtml, MarkField, PreparedArticle, RawHtml,
@@ -20,6 +20,12 @@ use tokio::sync::oneshot;
 use cache::{RenderCache, RenderCacheKey};
 
 use std::sync::Mutex;
+use std::{collections::HashSet, sync::OnceLock};
+
+fn remote_mark_flushes() -> &'static Mutex<HashSet<String>> {
+    static QUEUED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    QUEUED.get_or_init(Default::default)
+}
 
 type TranslationWaiters = Mutex<
     std::collections::HashMap<
@@ -290,6 +296,7 @@ pub(super) fn save_reading_progress(
 
 pub(super) fn mark_all_read(
     scope: Scope,
+    search: String,
     reply: oneshot::Sender<Result<usize, String>>,
     state: &WorkerState,
 ) {
@@ -300,7 +307,7 @@ pub(super) fn mark_all_read(
     let database = state.database.clone();
     job(reply, move |_| {
         let count = database.write(workspace.clone(), move |store| {
-            store.mark_all_read(scope).map_err(Into::into)
+            store.mark_all_read(scope, &search).map_err(Into::into)
         })?;
         if let (Some(kind), Some(config)) = (provider, config) {
             queue_remote_mark_flush(path, workspace, database, kind, config);
@@ -322,12 +329,13 @@ pub(super) fn mark(
     let config = provider.and_then(|kind| state.provider_settings(kind));
     let database = state.database.clone();
     job(reply, move |_| {
-        let remote_id = database.write(workspace.clone(), move |store| {
+        let (remote_id, changed) = database.write(workspace.clone(), move |store| {
             let remote_id = store.remote_entry_id(id)?;
-            store.mark(id, field, value)?;
-            Ok(remote_id)
+            let changed = store.mark(id, field, value)?;
+            Ok((remote_id, changed))
         })?;
-        if remote_id.is_some()
+        if changed
+            && remote_id.is_some()
             && !matches!(field, MarkField::Later)
             && let (Some(kind), Some(config)) = (provider, config)
         {
@@ -346,20 +354,47 @@ fn queue_remote_mark_flush(
 ) {
     // Local read state is already committed; remote sync must not hold the UI response open.
     let (reply, _result) = oneshot::channel();
+    {
+        let mut queued = remote_mark_flushes()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !queued.insert(workspace.clone()) {
+            return;
+        }
+    }
+    let queued_workspace = workspace.clone();
+    let job_workspace = workspace.clone();
     let remote_lock = remote_mark_lock(&workspace);
-    job(reply, move |runtime| {
+    let scheduled = try_job(reply, move |runtime| {
         let result = match ProviderClient::new(kind, &config) {
             Ok(remote) => runtime.block_on(async {
                 let _guard = remote_lock.lock().await;
-                flush_remote_marks(&path, &workspace, &database, &remote).await
+                flush_remote_marks(&path, &job_workspace, &database, &remote).await
             }),
             Err(error) => Err(error.to_string()),
         };
         if let Err(error) = &result {
             eprintln!("could not sync article read state to {kind:?}: {error}");
         }
+        remote_mark_flushes()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&queued_workspace);
+        if result.is_ok()
+            && Store::open_read_workspace(&path, &job_workspace)
+                .and_then(|store| store.pending_remote_marks())
+                .is_ok_and(|pending| !pending.is_empty())
+        {
+            queue_remote_mark_flush(path, job_workspace, database, kind, config);
+        }
         result
     });
+    if !scheduled {
+        remote_mark_flushes()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&workspace);
+    }
 }
 
 async fn flush_remote_marks(
@@ -368,43 +403,47 @@ async fn flush_remote_marks(
     database: &DbWriter,
     remote: &ProviderClient,
 ) -> Result<(), String> {
-    let pending = Store::open_read_workspace(path, workspace)
-        .map_err(|error| error.to_string())?
-        .pending_remote_marks()
-        .map_err(|error| error.to_string())?;
-    let mut read = Vec::new();
-    let mut unread = Vec::new();
-    let mut starred = Vec::new();
-    let mut unstarred = Vec::new();
-    for mark in &pending {
-        match mark.field.as_str() {
-            "is_read" if mark.value => read.push(mark.remote_id),
-            "is_read" => unread.push(mark.remote_id),
-            "is_starred" if mark.value => starred.push(mark.remote_id),
-            "is_starred" => unstarred.push(mark.remote_id),
-            _ => {}
+    loop {
+        let pending = Store::open_read_workspace(path, workspace)
+            .map_err(|error| error.to_string())?
+            .pending_remote_marks()
+            .map_err(|error| error.to_string())?;
+        if pending.is_empty() {
+            return Ok(());
         }
+        let mut read = Vec::new();
+        let mut unread = Vec::new();
+        let mut starred = Vec::new();
+        let mut unstarred = Vec::new();
+        for mark in &pending {
+            match mark.field.as_str() {
+                "is_read" if mark.value => read.push(mark.remote_id),
+                "is_read" => unread.push(mark.remote_id),
+                "is_starred" if mark.value => starred.push(mark.remote_id),
+                "is_starred" => unstarred.push(mark.remote_id),
+                _ => {}
+            }
+        }
+        remote
+            .mark_entries_status(&read, true)
+            .await
+            .map_err(|error| error.to_string())?;
+        remote
+            .mark_entries_status(&unread, false)
+            .await
+            .map_err(|error| error.to_string())?;
+        remote
+            .set_starred_entries(&starred, true)
+            .await
+            .map_err(|error| error.to_string())?;
+        remote
+            .set_starred_entries(&unstarred, false)
+            .await
+            .map_err(|error| error.to_string())?;
+        database.write(workspace.to_owned(), move |store| {
+            store.acknowledge_remote_marks(&pending).map_err(Into::into)
+        })?;
     }
-    remote
-        .mark_entries_status(&read, true)
-        .await
-        .map_err(|error| error.to_string())?;
-    remote
-        .mark_entries_status(&unread, false)
-        .await
-        .map_err(|error| error.to_string())?;
-    remote
-        .set_starred_entries(&starred, true)
-        .await
-        .map_err(|error| error.to_string())?;
-    remote
-        .set_starred_entries(&unstarred, false)
-        .await
-        .map_err(|error| error.to_string())?;
-    database.write(workspace.to_owned(), move |store| {
-        store.acknowledge_remote_marks(&pending).map_err(Into::into)
-    })?;
-    Ok(())
 }
 
 pub(super) fn extract(
@@ -550,9 +589,7 @@ pub(super) fn translate(
                 let backend_id = translator.cache_id();
                 let translation_context_hash =
                     panda_translate::title_source_hash(article.summary.title.trim());
-                let translation_backend = prompt_revision
-                    .map(|revision| format!("{backend_id}:{revision}"))
-                    .unwrap_or_else(|| backend_id.clone());
+                let translation_backend = config.revision_cache_id();
                 let source_hash = panda_translate::translation_revision_hash(
                     canonical.revision.0.as_ref(),
                     &translation_backend,
@@ -865,14 +902,17 @@ pub(super) fn translate_titles(
     reply: oneshot::Sender<Result<TitleTranslationOutcome, String>>,
     state: &WorkerState,
 ) {
+    let mut seen_ids = std::collections::HashSet::new();
+    let items: Vec<_> = items
+        .into_iter()
+        .filter(|item| seen_ids.insert(item.id))
+        .collect();
     let path = state.path.clone();
     let workspace = state.workspace();
     let translator_path = state.translator_path.clone();
-    let lock = state.title_translation_lock.clone();
     let attempted = state.title_translation_attempted.clone();
     let database = state.database.clone();
-    job(reply, move |runtime| {
-        let _serial = lock_mutex(&lock, "title translation serialization");
+    title_job(reply, move |runtime| {
         let received = items.len();
         let config = match TranslatorConfig::load(&translator_path) {
             Ok(config) => config,

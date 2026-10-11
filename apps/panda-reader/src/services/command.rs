@@ -126,6 +126,7 @@ pub enum Command {
     },
     MarkAllRead {
         scope: Scope,
+        search: String,
         reply: oneshot::Sender<Result<usize, String>>,
     },
     Extract {

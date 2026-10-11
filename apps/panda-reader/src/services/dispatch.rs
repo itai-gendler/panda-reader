@@ -56,9 +56,11 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             progress,
             reply,
         } => super::articles::save_reading_progress(id, progress, reply, state),
-        Command::MarkAllRead { scope, reply } => {
-            super::articles::mark_all_read(scope, reply, state)
-        }
+        Command::MarkAllRead {
+            scope,
+            search,
+            reply,
+        } => super::articles::mark_all_read(scope, search, reply, state),
         Command::Mark {
             id,
             field,

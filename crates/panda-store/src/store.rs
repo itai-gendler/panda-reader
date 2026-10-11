@@ -1338,17 +1338,18 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn mark(&self, id: i64, field: MarkField, value: bool) -> anyhow::Result<()> {
+    pub fn mark(&self, id: i64, field: MarkField, value: bool) -> anyhow::Result<bool> {
         let column = match field {
             MarkField::Read => "is_read",
             MarkField::Starred => "is_starred",
             MarkField::Later => "read_later",
         };
-        self.connection.execute(
-            &format!("UPDATE articles SET {column}=?1 WHERE id=?2"),
+        let changed = self.connection.execute(
+            &format!("UPDATE articles SET {column}=?1 WHERE id=?2 AND {column} IS NOT ?1"),
             params![value, id],
-        )?;
-        if !matches!(field, MarkField::Later)
+        )? > 0;
+        if changed
+            && !matches!(field, MarkField::Later)
             && let Some(remote_id) = self.remote_entry_id(id)?
         {
             self.connection.execute(
@@ -1357,7 +1358,7 @@ impl Store {
                 params![self.workspace, remote_id, column, value],
             )?;
         }
-        Ok(())
+        Ok(changed)
     }
 
     #[cfg(test)]
@@ -1405,7 +1406,7 @@ impl Store {
         Ok(completed)
     }
 
-    pub fn mark_all_read(&self, scope: Scope) -> anyhow::Result<usize> {
+    pub fn mark_all_read(&self, scope: Scope, search: &str) -> anyhow::Result<usize> {
         enum ScopeBind {
             None,
             FeedId(i64),
@@ -1418,30 +1419,35 @@ impl Store {
             Scope::Feed(id) => ("a.feed_id=?", ScopeBind::FeedId(id)),
             Scope::Folder(name) => ("f.folder=?", ScopeBind::Folder(name)),
         };
+        let search_query = fts_query(search);
+        let search_filter = if search_query.is_empty() {
+            ""
+        } else {
+            "AND a.id IN (SELECT rowid FROM article_fts WHERE article_fts MATCH ?)"
+        };
         let sql = format!(
             "SELECT a.id, a.remote_id FROM articles a JOIN feeds f ON f.id=a.feed_id
-             WHERE f.workspace=? AND a.is_read=0 AND {filter}"
+             WHERE f.workspace=? AND a.is_read=0 AND {filter} {search_filter}"
         );
         // Keep the article updates and their pending provider marks in one transaction.
         // A folder can contain thousands of rows, and autocommitting each row is expensive.
         let transaction = self.connection.unchecked_transaction()?;
         let rows: Vec<(i64, Option<i64>)> = {
             let mut statement = transaction.prepare(&sql)?;
-            match bind {
-                ScopeBind::FeedId(feed_id) => statement
-                    .query_map(params![self.workspace, feed_id], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?,
-                ScopeBind::Folder(folder) => statement
-                    .query_map(params![self.workspace, folder], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?,
-                ScopeBind::None => statement
-                    .query_map([&self.workspace], |row| Ok((row.get(0)?, row.get(1)?)))?
-                    .collect::<Result<Vec<_>, _>>()?,
+            let mut params: Vec<rusqlite::types::Value> = vec![self.workspace.clone().into()];
+            match &bind {
+                ScopeBind::FeedId(feed_id) => params.push((*feed_id).into()),
+                ScopeBind::Folder(folder) => params.push(folder.clone().into()),
+                ScopeBind::None => {}
             }
+            if !search_query.is_empty() {
+                params.push(search_query.into());
+            }
+            statement
+                .query_map(rusqlite::params_from_iter(params), |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
         };
         let count = rows.len();
         for (id, remote_id) in rows {
@@ -2375,8 +2381,7 @@ impl Store {
         } else {
             let resolved = resolve_url(&url)?;
             let referer = (resolved != url).then_some(url.as_str());
-            let plugin_resolved = resolved != url;
-            let raw = fetch_html(&self.client, &resolved, referer, plugin_resolved).await?;
+            let raw = fetch_html(&resolved, referer).await?;
             (resolved, raw)
         };
         let mut cache_hasher = Sha256::new();
@@ -2915,38 +2920,8 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 const MAX_ARTICLE_REDIRECTS: usize = 10;
 
-async fn fetch_html(
-    client: &Client,
-    url: &str,
-    referer: Option<&str>,
-    validate_destination: bool,
-) -> anyhow::Result<String> {
-    let response = if validate_destination {
-        fetch_public_destination(url, referer).await?
-    } else {
-        let mut request = client
-            .get(url)
-            .header(reqwest::header::USER_AGENT, BROWSER_UA)
-            .header(
-                reqwest::header::ACCEPT,
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            )
-            .header(
-                reqwest::header::ACCEPT_LANGUAGE,
-                "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-            );
-        if let Some(referer) = referer {
-            request = request.header(reqwest::header::REFERER, referer);
-        }
-        let response = request.send().await?;
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            anyhow::bail!(
-                "Publisher blocked automated article downloads ({status}). Open the original page instead."
-            );
-        }
-        response.error_for_status()?
-    };
+async fn fetch_html(url: &str, referer: Option<&str>) -> anyhow::Result<String> {
+    let response = fetch_public_destination(url, referer).await?;
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)

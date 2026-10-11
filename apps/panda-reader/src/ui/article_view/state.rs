@@ -33,13 +33,14 @@ impl ArticleView {
             return false;
         }
         let target = preferences.translation_language.translator_code();
-        let source = article
-            .extracted_html
-            .as_deref()
-            .filter(|html| !html.trim().is_empty())
-            .unwrap_or(article.content_html.as_str());
-        let hash =
-            panda_translate::translation_cache_hash(source, article.summary.title.trim(), provider);
+        let Some(canonical) = article.canonical.as_ref() else {
+            return false;
+        };
+        let hash = panda_translate::translation_revision_hash(
+            canonical.revision.0.as_ref(),
+            provider,
+            target,
+        );
         article
             .translated_lang
             .as_deref()
