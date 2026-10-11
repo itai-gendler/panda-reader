@@ -14,6 +14,7 @@ mod sync;
 mod task_coordinator;
 mod worker;
 
+pub(crate) use articles::fetch::ArticleFetchNetwork;
 pub use command::Command;
 #[allow(unused_imports)]
 pub(crate) use command::TitleTranslationInput;

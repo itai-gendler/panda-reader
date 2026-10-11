@@ -9,7 +9,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::ContextMenuExt as _,
-    scroll::ScrollableElement as _,
+    scroll::Scrollbar,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -495,12 +495,13 @@ impl Sidebar {
             .child(
                 div()
                     .id("feed-list-scroll")
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
                     .px_2()
                     .child(feed_list)
-                    .vertical_scrollbar(&scroll),
+                    .child(Scrollbar::vertical(&scroll)),
             )
     }
 

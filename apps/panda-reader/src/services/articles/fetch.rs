@@ -1,4 +1,5 @@
 use anyhow::Context as _;
+use panda_core::network::{ArticleNetworkMode, is_public_ip, validate_http_destination};
 use reqwest::Client;
 use std::time::Duration;
 use url::Url;
@@ -7,8 +8,88 @@ const MAX_ARTICLE_PAGE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_ARTICLE_REDIRECTS: usize = 10;
 const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
 
-pub(super) async fn fetch_html(url: &str, referer: Option<&str>) -> anyhow::Result<String> {
-    let response = fetch_public_destination(url, referer).await?;
+#[derive(Clone, Debug)]
+pub(crate) struct ArticleFetchNetwork {
+    pub(crate) mode: ArticleNetworkMode,
+    pub(crate) proxy_url: String,
+    pub(crate) trusted_fake_ip_ranges: String,
+}
+
+impl Default for ArticleFetchNetwork {
+    fn default() -> Self {
+        Self {
+            mode: ArticleNetworkMode::System,
+            proxy_url: String::new(),
+            trusted_fake_ip_ranges: "198.18.0.0/15\n2001:2::/48".into(),
+        }
+    }
+}
+
+impl ArticleFetchNetwork {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if self.mode == ArticleNetworkMode::ExplicitProxy {
+            validate_proxy_url(&self.proxy_url)?;
+        }
+        if self.mode == ArticleNetworkMode::TrustedTransparent {
+            parse_trusted_fake_ip_ranges(&self.trusted_fake_ip_ranges)?;
+        }
+        Ok(())
+    }
+}
+
+/// The route is selected again for every redirect target. In System mode we
+/// cannot inspect a PAC decision portably, so destination DNS stays strict;
+/// users with synthetic DNS should configure an explicit proxy or opt in to
+/// trusted transparent routing.
+#[derive(Clone, Debug)]
+enum FetchRoute {
+    SystemProxy(Vec<ipnet::IpNet>),
+    Direct,
+    ExplicitProxy(String),
+    TrustedTransparent(Vec<ipnet::IpNet>),
+}
+
+struct RoutePlanner<'a> {
+    network: &'a ArticleFetchNetwork,
+}
+
+impl<'a> RoutePlanner<'a> {
+    fn new(network: &'a ArticleFetchNetwork) -> Self {
+        Self { network }
+    }
+
+    fn route_for(&self, url: &Url) -> anyhow::Result<FetchRoute> {
+        validate_article_url(url)?;
+        Ok(match self.network.mode {
+            ArticleNetworkMode::System => FetchRoute::SystemProxy(parse_trusted_fake_ip_ranges(
+                &self.network.trusted_fake_ip_ranges,
+            )?),
+            ArticleNetworkMode::Direct => FetchRoute::Direct,
+            ArticleNetworkMode::ExplicitProxy => {
+                FetchRoute::ExplicitProxy(self.network.proxy_url.clone())
+            }
+            ArticleNetworkMode::TrustedTransparent => FetchRoute::TrustedTransparent(
+                parse_trusted_fake_ip_ranges(&self.network.trusted_fake_ip_ranges)?,
+            ),
+        })
+    }
+
+    async fn plan(
+        &self,
+        url: &Url,
+    ) -> anyhow::Result<(FetchRoute, Option<(String, Vec<std::net::SocketAddr>)>)> {
+        let route = self.route_for(url)?;
+        let pin = pin_destination_for_route(url, &route).await?;
+        Ok((route, pin))
+    }
+}
+
+pub(super) async fn fetch_html_with_network(
+    url: &str,
+    referer: Option<&str>,
+    network: &ArticleFetchNetwork,
+) -> anyhow::Result<String> {
+    let response = fetch_public_destination_with_network(url, referer, network).await?;
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -31,16 +112,36 @@ pub(super) async fn fetch_html(url: &str, referer: Option<&str>) -> anyhow::Resu
     Ok(encoding.decode(&bytes).0.into_owned())
 }
 
-pub(super) async fn fetch_public_destination(
+#[cfg(test)]
+async fn fetch_public_destination(
     url: &str,
     referer: Option<&str>,
 ) -> anyhow::Result<reqwest::Response> {
+    fetch_public_destination_with_network(url, referer, &ArticleFetchNetwork::default()).await
+}
+
+async fn fetch_public_destination_with_network(
+    url: &str,
+    referer: Option<&str>,
+    network: &ArticleFetchNetwork,
+) -> anyhow::Result<reqwest::Response> {
+    network.validate()?;
     let mut current_url = Url::parse(url)?;
+    let planner = RoutePlanner::new(network);
     for redirect_count in 0..=MAX_ARTICLE_REDIRECTS {
-        let pinned_host = pin_public_destination(&current_url).await?;
+        let (route, pinned_host) = planner.plan(&current_url).await?;
         let mut client = Client::builder()
             .timeout(Duration::from_secs(25))
             .redirect(reqwest::redirect::Policy::none());
+        match route {
+            FetchRoute::SystemProxy(_) => {}
+            FetchRoute::Direct | FetchRoute::TrustedTransparent(_) => {
+                client = client.no_proxy();
+            }
+            FetchRoute::ExplicitProxy(proxy_url) => {
+                client = client.proxy(reqwest::Proxy::all(proxy_url)?);
+            }
+        }
         if let Some((host, addresses)) = pinned_host {
             client = client.resolve_to_addrs(&host, &addresses);
         }
@@ -94,18 +195,39 @@ pub(super) fn article_redirect_url(current: &Url, location: &str) -> anyhow::Res
     Ok(next)
 }
 
-pub(super) async fn pin_public_destination(
+#[cfg(test)]
+async fn pin_public_destination(
     url: &Url,
+) -> anyhow::Result<Option<(String, Vec<std::net::SocketAddr>)>> {
+    pin_destination(url, &ArticleFetchNetwork::default()).await
+}
+
+#[cfg(test)]
+async fn pin_destination(
+    url: &Url,
+    network: &ArticleFetchNetwork,
+) -> anyhow::Result<Option<(String, Vec<std::net::SocketAddr>)>> {
+    RoutePlanner::new(network)
+        .plan(url)
+        .await
+        .map(|(_, pin)| pin)
+}
+
+async fn pin_destination_for_route(
+    url: &Url,
+    route: &FetchRoute,
 ) -> anyhow::Result<Option<(String, Vec<std::net::SocketAddr>)>> {
     use std::net::IpAddr;
 
-    if !matches!(url.scheme(), "http" | "https")
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        anyhow::bail!("article URL is not a safe HTTP destination");
-    }
     let host = url.host().context("article URL has no host")?;
+    if matches!(route, FetchRoute::ExplicitProxy(_)) {
+        if let Some(address) = host_ip(host) {
+            if !is_public_ip(address) {
+                anyhow::bail!("article URL resolves to a non-public network address");
+            }
+        }
+        return Ok(None);
+    }
     let port = url
         .port_or_known_default()
         .context("article URL has no port")?;
@@ -120,7 +242,34 @@ pub(super) async fn pin_public_destination(
                     .map(|addresses| addresses.collect())
             })
             .await??;
-            if addresses.is_empty() || addresses.iter().any(|address| !is_public_ip(address.ip())) {
+            let fake_ranges = match route {
+                FetchRoute::SystemProxy(ranges) | FetchRoute::TrustedTransparent(ranges) => {
+                    ranges.as_slice()
+                }
+                _ => &[],
+            };
+            if addresses.is_empty()
+                || addresses.iter().any(|address| {
+                    !is_public_ip(address.ip())
+                        && (is_local_or_private_ip(address.ip())
+                            || !fake_ranges
+                                .iter()
+                                .any(|range| range.contains(&address.ip())))
+                })
+            {
+                if addresses
+                    .iter()
+                    .any(|address| is_known_synthetic_route_ip(address.ip()))
+                    && !fake_ranges.iter().any(|range| {
+                        addresses
+                            .iter()
+                            .any(|address| range.contains(&address.ip()))
+                    })
+                {
+                    anyhow::bail!(
+                        "article URL resolved to a reserved or synthetic routing address outside the trusted CIDRs; add its range in Developer settings or use an explicit proxy"
+                    );
+                }
                 anyhow::bail!("article URL resolves to a non-public network address");
             }
             Ok(Some((domain.to_owned(), addresses)))
@@ -140,14 +289,26 @@ pub(super) async fn pin_public_destination(
     }
 }
 
-pub(super) fn is_public_ip(address: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
+fn validate_article_url(url: &Url) -> anyhow::Result<()> {
+    validate_http_destination(url).map_err(anyhow::Error::msg)
+}
 
+fn host_ip(host: url::Host<&str>) -> Option<std::net::IpAddr> {
+    use std::net::IpAddr;
+    match host {
+        url::Host::Ipv4(address) => Some(IpAddr::V4(address)),
+        url::Host::Ipv6(address) => Some(IpAddr::V6(address)),
+        url::Host::Domain(_) => None,
+    }
+}
+
+fn is_local_or_private_ip(address: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
     match address {
         IpAddr::V4(address) => {
             let octets = address.octets();
             let first_two = u16::from(octets[0]) << 8 | u16::from(octets[1]);
-            !(address.is_private()
+            address.is_private()
                 || address.is_loopback()
                 || address.is_link_local()
                 || address.is_broadcast()
@@ -155,26 +316,119 @@ pub(super) fn is_public_ip(address: std::net::IpAddr) -> bool {
                 || address.is_multicast()
                 || octets[0] == 0
                 || octets[0] >= 240
-                || (0x6440..=0x647f).contains(&first_two) // Shared address space, 100.64.0.0/10.
-                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
-                || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-                || (octets[0] == 198 && (18..=19).contains(&octets[1]))
-                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
-                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113))
+                || (0x6440..=0x647f).contains(&first_two)
         }
         IpAddr::V6(address) => {
             let segments = address.segments();
-            let global_unicast = segments[0] & 0xe000 == 0x2000;
-            global_unicast
-                && !(address.is_loopback()
-                    || address.is_unspecified()
-                    || address.is_multicast()
-                    || (segments[0] == 0x2001
-                        && (segments[1] & 0xfe00 == 0 || segments[1] == 0x0db8))
-                    || segments[0] == 0x2002)
+            address.is_loopback()
+                || address.is_unspecified()
+                || address.is_multicast()
+                || (segments[0] & 0xfe00 == 0xfc00)
+                || (segments[0] & 0xffc0 == 0xfe80)
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| is_local_or_private_ip(v4.into()))
         }
     }
+}
+
+fn is_known_synthetic_route_ip(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(address) => {
+            let octets = address.octets();
+            octets[0] == 198 && (18..=19).contains(&octets[1])
+        }
+        std::net::IpAddr::V6(address) => {
+            let segments = address.segments();
+            segments[0] == 0x2001 && segments[1] == 0x0002 && segments[2] == 0
+        }
+    }
+}
+
+fn parse_trusted_fake_ip_ranges(value: &str) -> anyhow::Result<Vec<ipnet::IpNet>> {
+    let ranges: anyhow::Result<Vec<_>> = value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            line.parse()
+                .with_context(|| format!("invalid fake-IP CIDR: {line}"))
+        })
+        .collect();
+    let ranges = ranges?;
+    if ranges.is_empty() {
+        anyhow::bail!("trusted transparent mode needs at least one fake-IP CIDR");
+    }
+    let local_ranges = [
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::/128",
+        "::1/128",
+        "::ffff:0:0/96",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+    ]
+    .into_iter()
+    .map(|range| range.parse::<ipnet::IpNet>().expect("valid built-in CIDR"))
+    .collect::<Vec<_>>();
+    if ranges
+        .iter()
+        .any(|range| local_ranges.iter().any(|local| cidrs_overlap(range, local)))
+    {
+        anyhow::bail!(
+            "trusted fake-IP CIDRs must not overlap private, local, or multicast networks"
+        );
+    }
+    Ok(ranges)
+}
+
+fn cidrs_overlap(left: &ipnet::IpNet, right: &ipnet::IpNet) -> bool {
+    use ipnet::IpNet;
+    match (left, right) {
+        (IpNet::V4(left), IpNet::V4(right)) => {
+            let prefix = left.prefix_len().min(right.prefix_len());
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            u32::from(left.network()) & mask == u32::from(right.network()) & mask
+        }
+        (IpNet::V6(left), IpNet::V6(right)) => {
+            let prefix = left.prefix_len().min(right.prefix_len());
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix)
+            };
+            u128::from(left.network()) & mask == u128::from(right.network()) & mask
+        }
+        _ => false,
+    }
+}
+
+fn validate_proxy_url(value: &str) -> anyhow::Result<()> {
+    let proxy = Url::parse(value).context("proxy URL must be an absolute URL")?;
+    if !matches!(proxy.scheme(), "http" | "https" | "socks5h")
+        || proxy.host().is_none()
+        || !proxy.username().is_empty()
+        || proxy.password().is_some()
+        || proxy.query().is_some()
+        || proxy.fragment().is_some()
+    {
+        anyhow::bail!(
+            "proxy URL must use http, https, or socks5h and must not contain credentials"
+        );
+    }
+    Ok(())
 }
 
 pub(super) async fn read_response_limited(
@@ -202,6 +456,7 @@ pub(super) async fn read_response_limited(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read as _, Write as _};
 
     #[test]
     fn article_fetch_only_allows_public_ip_destinations() {
@@ -221,6 +476,45 @@ mod tests {
         for address in ["1.1.1.1", "2606:4700:4700::1111"] {
             assert!(is_public_ip(address.parse().unwrap()), "{address}");
         }
+    }
+
+    #[test]
+    fn common_synthetic_ranges_are_distinguished_from_private_destinations() {
+        for address in ["198.18.0.21", "198.19.255.254", "2001:2::14"] {
+            let address = address.parse().unwrap();
+            assert!(!is_public_ip(address));
+            assert!(is_known_synthetic_route_ip(address));
+        }
+        for address in ["10.0.0.1", "192.168.1.1", "2001:db8::1"] {
+            let address = address.parse().unwrap();
+            assert!(!is_public_ip(address));
+            assert!(!is_known_synthetic_route_ip(address));
+        }
+    }
+
+    #[test]
+    fn system_proxy_accepts_configured_synthetic_routes_but_rejects_private_addresses() {
+        let network = ArticleFetchNetwork::default();
+        let route = RoutePlanner::new(&network)
+            .route_for(&Url::parse("https://example.com/story").unwrap())
+            .unwrap();
+        let ranges = match &route {
+            FetchRoute::SystemProxy(ranges) => ranges,
+            _ => panic!("default route should use the system proxy"),
+        };
+        let accepts = |address: &str| {
+            let address: std::net::IpAddr = address.parse().unwrap();
+            is_public_ip(address)
+                || (!is_local_or_private_ip(address)
+                    && ranges.iter().any(|range| range.contains(&address)))
+        };
+
+        assert!(accepts("198.18.0.21"));
+        assert!(accepts("2001:2::14"));
+        assert!(!accepts("127.0.0.1"));
+        assert!(!accepts("192.168.1.10"));
+        assert!(!accepts("169.254.1.1"));
+        assert!(!accepts("192.0.2.1"));
     }
 
     #[tokio::test]
@@ -255,5 +549,103 @@ mod tests {
             .is_err()
         );
         assert!(article_redirect_url(&current, "file:///etc/passwd").is_err());
+    }
+
+    #[tokio::test]
+    async fn explicit_http_proxy_receives_original_host_without_local_dns_lookup() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let count = stream.read(&mut buffer).unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 11\r\nConnection: close\r\n\r\nproxy works",
+                )
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let network = ArticleFetchNetwork {
+            mode: ArticleNetworkMode::ExplicitProxy,
+            proxy_url,
+            ..ArticleFetchNetwork::default()
+        };
+
+        let response = fetch_html_with_network("http://reader-test.invalid/story", None, &network)
+            .await
+            .unwrap();
+
+        assert_eq!(response, "proxy works");
+        let request = server.join().unwrap();
+        assert!(request.starts_with("GET http://reader-test.invalid/story HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn socks5h_proxy_receives_the_hostname_for_remote_resolution() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_url = format!("socks5h://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut greeting = [0; 2];
+            stream.read_exact(&mut greeting).unwrap();
+            let mut methods = vec![0; usize::from(greeting[1])];
+            stream.read_exact(&mut methods).unwrap();
+            stream.write_all(&[5, 0]).unwrap();
+
+            let mut request_header = [0; 4];
+            stream.read_exact(&mut request_header).unwrap();
+            assert_eq!(request_header, [5, 1, 0, 3]);
+            let mut host_length = [0; 1];
+            stream.read_exact(&mut host_length).unwrap();
+            let mut host = vec![0; usize::from(host_length[0])];
+            stream.read_exact(&mut host).unwrap();
+            let mut port = [0; 2];
+            stream.read_exact(&mut port).unwrap();
+            stream
+                .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
+                .unwrap();
+
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let count = stream.read(&mut buffer).unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 11\r\nConnection: close\r\n\r\nproxy works",
+                )
+                .unwrap();
+            (String::from_utf8(host).unwrap(), u16::from_be_bytes(port))
+        });
+        let network = ArticleFetchNetwork {
+            mode: ArticleNetworkMode::ExplicitProxy,
+            proxy_url,
+            ..ArticleFetchNetwork::default()
+        };
+
+        let response = fetch_html_with_network("http://reader-test.invalid/story", None, &network)
+            .await
+            .unwrap();
+
+        assert_eq!(response, "proxy works");
+        assert_eq!(server.join().unwrap(), ("reader-test.invalid".into(), 80));
     }
 }

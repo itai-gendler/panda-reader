@@ -2,6 +2,7 @@
 
 use crate::{ArticleDocument, PluginCapability, PluginStage};
 use anyhow::{Context as _, bail};
+use panda_core::network::{resolve_public_addresses, validate_http_destination};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -474,8 +475,6 @@ fn plugin_http_request(state: &mut HostState, request: &Value) -> Result<Value, 
     let url = Url::parse(required_string(request, "url")?)
         .map_err(|error| wasmi::Error::new(format!("invalid plugin request URL: {error}")))?;
     if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
         || url.port().is_some_and(|port| port != 443)
         || !state
             .network_hosts
@@ -486,6 +485,15 @@ fn plugin_http_request(state: &mut HostState, request: &Value) -> Result<Value, 
             "plugin request URL is outside its HTTPS host allowlist",
         ));
     }
+    validate_http_destination(&url).map_err(host_error)?;
+    let pinned_host = match url.host().expect("validated URL has a host") {
+        url::Host::Domain(host) => {
+            let port = url.port_or_known_default().unwrap_or(443);
+            let addresses = resolve_public_addresses(host, port).map_err(host_error)?;
+            Some((host.to_owned(), addresses))
+        }
+        url::Host::Ipv4(_) | url::Host::Ipv6(_) => None,
+    };
     let method = required_string(request, "method")?;
     let method = match method {
         "GET" => reqwest::Method::GET,
@@ -506,13 +514,15 @@ fn plugin_http_request(state: &mut HostState, request: &Value) -> Result<Value, 
     if body.len() > MAX_PLUGIN_HTTP_BYTES {
         return Err(wasmi::Error::new("plugin HTTP request body is too large"));
     }
-    let client = reqwest::blocking::Client::builder()
+    let mut client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(12))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("PandaReader/0.2")
-        .build()
-        .map_err(host_error)?;
+        .user_agent("PandaReader/0.2");
+    if let Some((host, addresses)) = pinned_host {
+        client = client.resolve_to_addrs(&host, &addresses);
+    }
+    let client = client.build().map_err(host_error)?;
     let mut outgoing = client.request(method, url.clone());
     if let Some(headers) = request.get("headers").and_then(Value::as_object) {
         for (name, value) in headers {
@@ -706,7 +716,11 @@ mod tests {
             url: "https://news.google.com/rss/articles/id".into(),
             stage: PluginStage::ResolveUrl,
             capabilities: vec![PluginCapability::NetworkRequest],
-            network_hosts: vec!["news.google.com".into()],
+            network_hosts: vec![
+                "news.google.com".into(),
+                "localhost".into(),
+                "127.0.0.1".into(),
+            ],
             results: HashMap::new(),
             result_bytes: 0,
             read_bytes: 0,
@@ -730,6 +744,17 @@ mod tests {
         );
         assert!(insecure.is_err());
         assert_eq!(state.network_requests, 2);
+
+        let local_host = plugin_http_request(
+            &mut state,
+            &json!({"method":"GET","url":"https://localhost/"}),
+        );
+        assert!(local_host.is_err());
+        let local_ip = plugin_http_request(
+            &mut state,
+            &json!({"method":"GET","url":"https://127.0.0.1/"}),
+        );
+        assert!(local_ip.is_err());
     }
 
     #[test]

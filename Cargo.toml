@@ -15,7 +15,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-version = "0.2.6"
+version = "0.2.8"
 publish = false
 license = "MIT"
 
@@ -37,14 +37,15 @@ hex = "0.4"
 ego-tree = "0.9.0"
 html5ever = "0.29.1"
 hmac = "0.12"
+ipnet = "2"
 image = "0.25"
 reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.7" }
 semver = "1"
 opml = "1"
 quick_html2md = "0.2"
 markdown = "1.0"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "charset", "gzip", "brotli", "json", "rustls-tls", "system-proxy"] }
-rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "charset", "gzip", "brotli", "json", "rustls-tls", "socks", "system-proxy"] }
+rusqlite = { version = "0.40.2", features = ["backup", "bundled", "fallible_uint", "functions"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

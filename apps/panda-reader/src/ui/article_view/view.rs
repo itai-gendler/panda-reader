@@ -8,6 +8,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::ContextMenuExt as _,
+    scroll::Scrollbar,
     text::{TextView, TextViewStyle},
     v_flex,
 };
@@ -364,6 +365,7 @@ impl ArticleView {
                             .child(
                                 div()
                                     .id("article-body-scroll")
+                                    .relative()
                                     .flex_1()
                                     .min_h_0()
                                     .w_full()
@@ -454,7 +456,8 @@ impl ArticleView {
                                                         cx.open_url(url);
                                                     }
                                                 }),
-                                            ),
+                                            )
+                                            .child(Scrollbar::vertical(&self.scroll)),
                                     ),
                             ),
                     ),
@@ -597,12 +600,12 @@ impl MarkdownPlugin for ArticleImageMarkdown {
         _window: &mut gpui::Window,
         _cx: &mut gpui::App,
     ) -> impl IntoElement {
-        let mut container = div().w_full().min_w_0().flex().justify_center().py_2();
+        let mut container = div().w_full().min_w_0().py_2();
         if let Some(image) = node.data::<ArticleImageData>() {
             let index = image.index;
             let app = self.app.clone();
             container = container.child(
-                div().child(
+                div().w_full().min_w_0().flex().justify_center().child(
                     img(image.url.clone())
                         .id(("article-body-image", index as u64))
                         .max_w_full()

@@ -22,6 +22,7 @@ fn worker_routes_local_reads_and_checks_provider_operations() {
         panda_providers::ProviderSettingsMap::new(),
         false,
         30,
+        services::ArticleFetchNetwork::default(),
     );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

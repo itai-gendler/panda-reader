@@ -111,6 +111,11 @@ pub(super) fn migrate_workspace_schema(connection: &Connection) -> anyhow::Resul
 
 impl Store {
     pub fn migrate(path: &Path) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            rusqlite::version_number() >= 3_051_003,
+            "SQLite 3.51.3 or newer is required; linked version is {}",
+            rusqlite::version()
+        );
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -145,18 +150,11 @@ impl Store {
         let needs_foreign_key_toggle =
             has_legacy_feeds_table && !feed_columns.iter().any(|column| column == "workspace");
         if schema_version < CURRENT_SCHEMA_VERSION && has_existing_schema {
-            connection.query_row("PRAGMA wal_checkpoint(FULL)", [], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?;
             let timestamp = chrono::Utc::now().timestamp_millis();
             let file_name = path.file_name().unwrap_or_default().to_string_lossy();
             let backup_path =
                 path.with_file_name(format!("{file_name}.pre-migration-{timestamp}.bak"));
-            std::fs::copy(path, &backup_path)?;
+            connection.backup("main", &backup_path, None)?;
             std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)

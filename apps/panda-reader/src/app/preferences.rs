@@ -1,5 +1,6 @@
 //! Persisted application preferences. Keep serialization independent of the UI.
 
+pub use panda_core::network::ArticleNetworkMode;
 use panda_core::{ContentExtractor, TranslationLayout};
 use panda_providers::ProviderKind;
 use serde::{Deserialize, Serialize};
@@ -111,6 +112,13 @@ impl LibrarySource {
         }
     }
 
+    pub fn endpoint_placeholder(self) -> &'static str {
+        match self {
+            Self::FreshRss => "https://freshrss.example.org/api/greader.php",
+            Self::Local | Self::Miniflux => "https://provider.example.org",
+        }
+    }
+
     pub fn workspace(self) -> &'static str {
         match self {
             Self::Local => "local",
@@ -176,6 +184,12 @@ pub struct Preferences {
     pub detailed_sync_logging: bool,
     /// Delete sync.log and its rotated copy when they exceed this age.
     pub sync_log_retention_days: u16,
+    /// Network route used only for article full-text requests.
+    pub article_network_mode: ArticleNetworkMode,
+    /// Explicit HTTP(S) or SOCKS5h proxy URL. Credentials are not accepted.
+    pub article_proxy_url: String,
+    /// Newline-separated CIDR ranges used only in trusted transparent proxy mode.
+    pub trusted_proxy_fake_ip_ranges: String,
 }
 
 impl Default for Preferences {
@@ -210,6 +224,9 @@ impl Default for Preferences {
             check_for_updates: true,
             detailed_sync_logging: false,
             sync_log_retention_days: 30,
+            article_network_mode: ArticleNetworkMode::System,
+            article_proxy_url: String::new(),
+            trusted_proxy_fake_ip_ranges: "198.18.0.0/15\n2001:2::/48".into(),
         }
     }
 }

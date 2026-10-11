@@ -1,4 +1,5 @@
-use crate::app::preferences::{Language, Preferences};
+use crate::app::preferences::{ArticleNetworkMode, Language, Preferences};
+use crate::services::ArticleFetchNetwork;
 use crate::services::Command;
 use crate::ui::i18n;
 use crate::ui::theme;
@@ -10,7 +11,9 @@ use panda_core::Scope;
 use panda_translate::TranslatorConfig;
 use tokio::sync::oneshot;
 
-use super::selectors::{LanguageOption, LogRetentionOption, TranslatorProvider};
+use super::selectors::{
+    ArticleNetworkModeOption, LanguageOption, LogRetentionOption, TranslatorProvider,
+};
 
 #[derive(Clone, Copy)]
 pub(super) enum ReaderSetting {
@@ -21,6 +24,68 @@ pub(super) enum ReaderSetting {
 }
 
 impl ReaderWindow {
+    pub(in crate::ui) fn set_article_network_mode(
+        &mut self,
+        mode: ArticleNetworkMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let network = ArticleFetchNetwork {
+            mode,
+            proxy_url: self.preferences.article_proxy_url.clone(),
+            trusted_fake_ip_ranges: self.preferences.trusted_proxy_fake_ip_ranges.clone(),
+        };
+        if let Err(error) = network.validate() {
+            self.set_error(error.to_string());
+            let selected = IndexPath::new(ArticleNetworkModeOption::index(
+                self.preferences.article_network_mode,
+            ));
+            self.settings
+                .article_network_mode_select
+                .update(cx, |select, cx| {
+                    select.set_selected_index(Some(selected), window, cx)
+                });
+            cx.notify();
+            return;
+        }
+        self.preferences.article_network_mode = mode;
+        self.services.set_article_fetch_network(network);
+        self.save_preferences();
+        cx.notify();
+    }
+
+    pub(in crate::ui) fn save_article_network_settings(&mut self, cx: &mut Context<Self>) {
+        let proxy_url = self
+            .settings
+            .article_proxy_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        let fake_ranges = self
+            .settings
+            .trusted_fake_ip_ranges_input
+            .read(cx)
+            .value()
+            .to_string();
+        let network = ArticleFetchNetwork {
+            mode: self.preferences.article_network_mode,
+            proxy_url: proxy_url.clone(),
+            trusted_fake_ip_ranges: fake_ranges.clone(),
+        };
+        if let Err(error) = network.validate() {
+            self.set_error(error.to_string());
+            cx.notify();
+            return;
+        }
+        self.preferences.article_proxy_url = proxy_url;
+        self.preferences.trusted_proxy_fake_ip_ranges = fake_ranges;
+        self.services.set_article_fetch_network(network);
+        self.save_preferences();
+        self.set_flash(self.t("Article network settings saved"), cx);
+        cx.notify();
+    }
+
     pub(super) fn adjust_reader_setting(
         &mut self,
         setting: ReaderSetting,
@@ -124,6 +189,12 @@ impl ReaderWindow {
         self.preferences = Preferences::default();
         self.services.set_detailed_sync_logging(false);
         self.services
+            .set_article_fetch_network(ArticleFetchNetwork {
+                mode: self.preferences.article_network_mode,
+                proxy_url: self.preferences.article_proxy_url.clone(),
+                trusted_fake_ip_ranges: self.preferences.trusted_proxy_fake_ip_ranges.clone(),
+            });
+        self.services
             .set_log_retention_days(self.preferences.sync_log_retention_days);
         self.settings.library_source = self.preferences.library_source;
         self.translator_config = TranslatorConfig::default();
@@ -180,6 +251,32 @@ impl ReaderWindow {
                 cx,
             );
         });
+        let reset_language = self.preferences.language;
+        let reset_network_mode = self.preferences.article_network_mode;
+        self.settings
+            .article_network_mode_select
+            .update(cx, |select, cx| {
+                select.set_items(
+                    SearchableVec::new(ArticleNetworkModeOption::all(reset_language)),
+                    window,
+                    cx,
+                );
+                select.set_selected_index(
+                    Some(IndexPath::new(ArticleNetworkModeOption::index(
+                        reset_network_mode,
+                    ))),
+                    window,
+                    cx,
+                );
+            });
+        let proxy_url = self.preferences.article_proxy_url.clone();
+        self.settings
+            .article_proxy_input
+            .update(cx, |input, cx| input.set_value(&proxy_url, window, cx));
+        let fake_ranges = self.preferences.trusted_proxy_fake_ip_ranges.clone();
+        self.settings
+            .trusted_fake_ip_ranges_input
+            .update(cx, |input, cx| input.set_value(&fake_ranges, window, cx));
 
         self.settings.add_input.update(cx, |input, cx| {
             input.set_placeholder(
@@ -382,6 +479,19 @@ impl ReaderWindow {
             );
             select.set_selected_index(Some(retention_index), window, cx);
         });
+        let network_mode_index = IndexPath::new(ArticleNetworkModeOption::index(
+            self.preferences.article_network_mode,
+        ));
+        self.settings
+            .article_network_mode_select
+            .update(cx, |select, cx| {
+                select.set_items(
+                    SearchableVec::new(ArticleNetworkModeOption::all(language)),
+                    window,
+                    cx,
+                );
+                select.set_selected_index(Some(network_mode_index), window, cx);
+            });
         self.save_preferences();
         cx.notify();
     }

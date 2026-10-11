@@ -25,6 +25,7 @@ feed-rs.workspace = true
 futures.workspace = true
 gpui-kit.workspace = true
 image.workspace = true
+ipnet.workspace = true
 panda-content = { path = "../../crates/panda-content" }
 panda-plugins = { path = "../../crates/panda-plugins" }
 panda-core = { path = "../../crates/panda-core" }

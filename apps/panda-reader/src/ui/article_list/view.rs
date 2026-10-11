@@ -7,7 +7,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::ContextMenuExt as _,
-    scroll::ScrollableElement as _,
+    scroll::Scrollbar,
     v_flex,
 };
 use gpui_kit::*;
@@ -258,7 +258,7 @@ impl ArticleList {
                         .size_full()
                         .track_scroll(&scroll),
                     )
-                    .vertical_scrollbar(&scroll),
+                    .child(Scrollbar::vertical(&scroll)),
             );
         }
         list

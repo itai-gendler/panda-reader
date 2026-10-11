@@ -41,6 +41,7 @@ pub struct AppServices {
     sender: mpsc::Sender<QueuedCommand>,
     workspace: Arc<RwLock<String>>,
     detailed_sync_logging: Arc<AtomicBool>,
+    article_fetch_network: Arc<RwLock<super::ArticleFetchNetwork>>,
     database_path: PathBuf,
     pub(super) article_work_cancellations: ArticleWorkCancellations,
 }
@@ -106,6 +107,7 @@ impl AppServices {
         initial_settings: ProviderSettingsMap,
         detailed_sync_logging: bool,
         log_retention_days: u16,
+        article_fetch_network: super::ArticleFetchNetwork,
     ) -> Self {
         diagnostics::set_log_retention_days(log_retention_days, &path);
         let database_path = path.clone();
@@ -115,6 +117,8 @@ impl AppServices {
         let worker_article_work_cancellations = article_work_cancellations.clone();
         let detailed_sync_logging = Arc::new(AtomicBool::new(detailed_sync_logging));
         let worker_detailed_sync_logging = detailed_sync_logging.clone();
+        let article_fetch_network = Arc::new(RwLock::new(article_fetch_network));
+        let worker_article_fetch_network = article_fetch_network.clone();
         let body_cache = Arc::new(Mutex::new(RenderCache::default()));
         let (sender, mut receiver) = mpsc::channel::<QueuedCommand>(COMMAND_QUEUE_CAPACITY);
         thread::Builder::new()
@@ -167,6 +171,7 @@ impl AppServices {
                         provider_settings_path,
                         provider_settings: settings.clone(),
                         detailed_sync_logging: worker_detailed_sync_logging,
+                        article_fetch_network: worker_article_fetch_network,
                         body_cache,
                         title_translation_attempted: Arc::new(Mutex::new(HashMap::new())),
                         provider_connection_generations: Arc::new(Mutex::new(HashMap::new())),
@@ -196,6 +201,7 @@ impl AppServices {
             sender,
             workspace,
             detailed_sync_logging,
+            article_fetch_network,
             database_path,
             article_work_cancellations,
         }
@@ -232,6 +238,10 @@ impl AppServices {
         self.detailed_sync_logging.store(enabled, Ordering::Relaxed);
     }
 
+    pub fn set_article_fetch_network(&self, network: super::ArticleFetchNetwork) {
+        *write_lock(&self.article_fetch_network, "article fetch network") = network;
+    }
+
     pub fn set_log_retention_days(&self, days: u16) {
         diagnostics::set_log_retention_days(days, &self.database_path);
     }
@@ -246,6 +256,7 @@ pub struct WorkerState {
     pub plugin_registry: Arc<RwLock<PluginRegistry>>,
     pub provider_settings: Arc<RwLock<ProviderSettingsMap>>,
     pub detailed_sync_logging: Arc<AtomicBool>,
+    pub article_fetch_network: Arc<RwLock<super::ArticleFetchNetwork>>,
     pub body_cache: Arc<Mutex<RenderCache>>,
     pub title_translation_attempted: Arc<Mutex<HashMap<String, std::time::Instant>>>,
     pub provider_connection_generations: Arc<Mutex<HashMap<ProviderKind, u64>>>,

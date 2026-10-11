@@ -2,9 +2,10 @@ use crate::app::preferences::{LibrarySource, Preferences};
 use crate::services::AppServices;
 use crate::ui::i18n;
 use crate::ui::window::ReaderWindow;
+use gpui_kit::base::VirtualListScrollHandle;
 use gpui_kit::component::{
     IndexPath,
-    input::{InputEvent, InputState},
+    input::{InputEvent, InputState, TextareaState},
     select::{SearchableVec, SelectEvent, SelectState},
 };
 use gpui_kit::*;
@@ -14,7 +15,9 @@ use panda_providers::ProviderSettingsMap;
 use panda_translate::TranslatorConfig;
 use std::sync::Arc;
 
-use super::selectors::{LanguageOption, LogRetentionOption, SettingsPage, TranslatorProvider};
+use super::selectors::{
+    ArticleNetworkModeOption, LanguageOption, LogRetentionOption, SettingsPage, TranslatorProvider,
+};
 
 pub(in crate::ui) struct Settings {
     _subscriptions: Vec<Subscription>,
@@ -29,6 +32,10 @@ pub(in crate::ui) struct Settings {
         Entity<SelectState<SearchableVec<LanguageOption>>>,
     pub(in crate::ui) provider_select: Entity<SelectState<SearchableVec<TranslatorProvider>>>,
     pub(in crate::ui) log_retention_select: Entity<SelectState<SearchableVec<LogRetentionOption>>>,
+    pub(in crate::ui) article_network_mode_select:
+        Entity<SelectState<SearchableVec<ArticleNetworkModeOption>>>,
+    pub(in crate::ui) article_proxy_input: Entity<InputState>,
+    pub(in crate::ui) trusted_fake_ip_ranges_input: Entity<TextareaState>,
     pub(in crate::ui) upstream_select: Entity<SelectState<SearchableVec<LibrarySource>>>,
     pub(in crate::ui) azure_key_input: Entity<InputState>,
     pub(in crate::ui) azure_region_input: Entity<InputState>,
@@ -55,6 +62,8 @@ pub(in crate::ui) struct Settings {
     pub(in crate::ui) community_plugin_error: Option<String>,
     pub(in crate::ui) services: AppServices,
     pub(in crate::ui) added_feeds_search: String,
+    pub(in crate::ui) added_feeds_scroll: VirtualListScrollHandle,
+    pub(in crate::ui) settings_scroll: ScrollHandle,
     pub(in crate::ui) is_connecting: bool,
     pub(in crate::ui) provider_settings: ProviderSettingsMap,
     pub(in crate::ui) library_source: LibrarySource,
@@ -62,6 +71,7 @@ pub(in crate::ui) struct Settings {
     pub(in crate::ui) page: SettingsPage,
     pub(in crate::ui) pending_reset_settings: bool,
     pub(in crate::ui) theme_picker_open: bool,
+    pub(in crate::ui) advanced_network_settings_open: bool,
 }
 
 impl Settings {
@@ -81,11 +91,7 @@ impl Settings {
         let add_input = cx.new(|cx| InputState::new(window, cx).placeholder(add_placeholder));
         let provider_url_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(if library_source == LibrarySource::FreshRss {
-                    "https://freshrss.example.org/api/greader.php"
-                } else {
-                    "https://provider.example.org"
-                })
+                .placeholder(library_source.endpoint_placeholder())
                 .default_value(selected_settings.map_or("", |value| value.endpoint.as_str()))
         });
         let provider_username_input = cx.new(|cx| {
@@ -149,6 +155,25 @@ impl Settings {
                 window,
                 cx,
             )
+        });
+        let article_network_mode_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(ArticleNetworkModeOption::all(preferences.language)),
+                Some(IndexPath::new(preferences.article_network_mode.index())),
+                window,
+                cx,
+            )
+        });
+        let article_proxy_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("http://127.0.0.1:7890 or socks5h://127.0.0.1:1080")
+                .default_value(preferences.article_proxy_url.as_str())
+        });
+        let trusted_fake_ip_ranges_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(2, 4)
+                .placeholder("One CIDR per line")
+                .default_value(preferences.trusted_proxy_fake_ip_ranges.as_str())
         });
         let azure_key_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -232,6 +257,9 @@ impl Settings {
                 if matches!(event, InputEvent::Change) {
                     this.settings.added_feeds_search =
                         added_feeds_search_for_events.read(cx).value().to_string();
+                    this.settings
+                        .added_feeds_scroll
+                        .scroll_to_item(0, ScrollStrategy::Top);
                     cx.notify();
                 }
             },
@@ -290,6 +318,15 @@ impl Settings {
             },
         ));
         _subscriptions.push(cx.subscribe_in(
+            &article_network_mode_select,
+            window,
+            |this, _, event, window, cx| {
+                if let SelectEvent::Confirm(Some(option)) = event {
+                    this.set_article_network_mode(option.mode, window, cx);
+                }
+            },
+        ));
+        _subscriptions.push(cx.subscribe_in(
             &upstream_select,
             window,
             |this, _, event, window, cx| {
@@ -309,6 +346,7 @@ impl Settings {
                         .provider()
                         .and_then(|provider| this.settings.provider_settings.get(&provider));
                     this.settings.provider_url_input.update(cx, |input, cx| {
+                        input.set_placeholder(kind.endpoint_placeholder(), window, cx);
                         input.set_value(
                             settings.map_or("", |value| value.endpoint.as_str()),
                             window,
@@ -357,6 +395,9 @@ impl Settings {
             translation_language_select,
             provider_select,
             log_retention_select,
+            article_network_mode_select,
+            article_proxy_input,
+            trusted_fake_ip_ranges_input,
             upstream_select,
             azure_key_input,
             azure_region_input,
@@ -383,6 +424,8 @@ impl Settings {
             community_plugin_error: None,
             services,
             added_feeds_search: String::new(),
+            added_feeds_scroll: VirtualListScrollHandle::new(),
+            settings_scroll: ScrollHandle::default(),
             is_connecting: false,
             provider_settings,
             library_source,
@@ -390,6 +433,7 @@ impl Settings {
             page: SettingsPage::General,
             pending_reset_settings: false,
             theme_picker_open: false,
+            advanced_network_settings_open: false,
             _subscriptions,
         }
     }

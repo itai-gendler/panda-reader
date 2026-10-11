@@ -1,7 +1,9 @@
 use crate::ui::components::{BundledIcon, bundled_icon, sidebar_font};
 use crate::ui::window::ReaderWindow;
 use gpui_kit::base::StyledExt as _;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, scroll::Scrollbar, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -158,10 +160,12 @@ impl Settings {
                     .child(
                         div()
                             .id("settings-scroll")
+                            .relative()
                             .flex_1()
                             .w_full()
                             .min_h_0()
                             .overflow_y_scroll()
+                            .track_scroll(&self.settings_scroll)
                             .child(
                                 h_flex().w_full().justify_center().child(
                                     div()
@@ -172,7 +176,8 @@ impl Settings {
                                         .pb_8()
                                         .child(page),
                                 ),
-                            ),
+                            )
+                            .child(Scrollbar::vertical(&self.settings_scroll)),
                     ),
             )
             .when(self.theme_picker_open, |view| {

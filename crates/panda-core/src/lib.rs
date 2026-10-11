@@ -1,4 +1,5 @@
 mod model;
+pub mod network;
 
 pub use model::{
     Article, ArticleCursor, ArticleSummary, CanonicalArticle, CanonicalHtml, ContentExtractor,

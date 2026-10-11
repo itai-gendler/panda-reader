@@ -159,11 +159,13 @@ const ZH_CN: &[(&str, &str)] = &[
     ("Reset app settings now?", "现在重置应用设置吗？"),
     ("Settings restored to defaults.", "设置已恢复为默认值。"),
     (
-        "Restore interface and translation settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
-        "将界面和翻译设置（包括已保存的翻译密钥）恢复为默认值。订阅、文章和 Provider 连接会保留。",
+        "Restore interface, translation, and article network settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
+        "将界面、翻译和文章网络设置（包括已保存的翻译密钥）恢复为默认值。订阅、文章和 Provider 连接会保留。",
     ),
     ("Appearance", "外观"),
     ("Developer", "开发者"),
+    ("Advanced settings", "高级设置"),
+    ("Synthetic routing CIDR ranges", "合成路由 CIDR 范围"),
     ("Diagnostics", "诊断"),
     ("Detailed sync logging", "详细同步日志"),
     (
@@ -183,6 +185,37 @@ const ZH_CN: &[(&str, &str)] = &[
     ("{} days", "{} 天"),
     ("Copy path", "复制路径"),
     ("Log path copied", "日志路径已复制"),
+    ("Full-text fetch network", "全文抓取网络"),
+    (
+        "Applies only when fetching an article's original page to extract full text. RSS refresh and Provider sync are not affected.",
+        "仅用于从文章原始网页抓取全文；不会影响 RSS 刷新或 Provider 同步。",
+    ),
+    (
+        "System proxy mode follows configured system/environment proxies. Synthetic routing addresses are allowed only when they match the CIDRs below; private and local addresses remain blocked. Direct mode bypasses proxies.",
+        "系统代理模式会使用已配置的系统/环境代理。只有匹配下方 CIDR 的合成路由地址才会放行；私网和本地地址仍会被拦截。直连模式会绕过代理。",
+    ),
+    (
+        "System mode follows the configured system/environment proxy with strict local DNS checks. Direct bypasses proxies; explicit proxy mode delegates DNS to the proxy; transparent mode trusts only the CIDRs below.",
+        "系统模式沿用系统或环境代理，同时严格检查本机 DNS 结果。直连模式绕过代理；显式代理模式由代理解析域名；透明模式只信任下方填写的 CIDR。",
+    ),
+    (
+        "HTTP, HTTPS, or SOCKS5h proxy URL",
+        "HTTP、HTTPS 或 SOCKS5h 代理地址",
+    ),
+    (
+        "Trusted transparent proxy CIDR ranges",
+        "可信透明代理 CIDR 网段",
+    ),
+    (
+        "One CIDR per line. Used by system proxy and trusted transparent modes for synthetic routing addresses; private and local addresses remain blocked. Proxy credentials are not supported.",
+        "每行一个 CIDR。系统代理和可信透明代理模式会用它放行合成路由地址；私网和本地地址仍会被拦截。不支持代理认证信息。",
+    ),
+    ("Save network settings", "保存网络设置"),
+    ("Article network settings saved", "文章网络设置已保存"),
+    ("System proxy", "系统代理"),
+    ("Direct connection", "直接连接"),
+    ("Explicit proxy", "显式代理"),
+    ("Trusted transparent proxy", "可信透明代理"),
     ("About", "关于"),
     ("Updates", "更新"),
     (
@@ -597,11 +630,13 @@ const ZH_TW: &[(&str, &str)] = &[
     ("Reset app settings now?", "現在重設應用程式設定嗎？"),
     ("Settings restored to defaults.", "設定已恢復為預設值。"),
     (
-        "Restore interface and translation settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
-        "將介面與翻譯設定（包含已儲存的翻譯金鑰）恢復為預設值。訂閱、文章與 Provider 連線會保留。",
+        "Restore interface, translation, and article network settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
+        "將介面、翻譯與文章網路設定（包含已儲存的翻譯金鑰）恢復為預設值。訂閱、文章與 Provider 連線會保留。",
     ),
     ("Appearance", "外觀"),
     ("Developer", "開發者"),
+    ("Advanced settings", "進階設定"),
+    ("Synthetic routing CIDR ranges", "合成路由 CIDR 範圍"),
     ("Diagnostics", "診斷"),
     ("Detailed sync logging", "詳細同步記錄"),
     (
@@ -621,6 +656,37 @@ const ZH_TW: &[(&str, &str)] = &[
     ("{} days", "{} 天"),
     ("Copy path", "複製路徑"),
     ("Log path copied", "已複製記錄檔路徑"),
+    ("Full-text fetch network", "全文擷取網路"),
+    (
+        "Applies only when fetching an article's original page to extract full text. RSS refresh and Provider sync are not affected.",
+        "僅用於從文章原始網頁擷取全文；不會影響 RSS 更新或 Provider 同步。",
+    ),
+    (
+        "System proxy mode follows configured system/environment proxies. Synthetic routing addresses are allowed only when they match the CIDRs below; private and local addresses remain blocked. Direct mode bypasses proxies.",
+        "系統代理模式會使用已設定的系統/環境代理。只有符合下方 CIDR 的合成路由位址才會放行；私有與本機位址仍會封鎖。直接連線會繞過代理。",
+    ),
+    (
+        "System mode follows the configured system/environment proxy with strict local DNS checks. Direct bypasses proxies; explicit proxy mode delegates DNS to the proxy; transparent mode trusts only the CIDRs below.",
+        "系統模式沿用系統或環境代理，同時嚴格檢查本機 DNS 結果。直接連線會繞過代理；明確代理模式由代理解析網域；透明模式只信任下方填寫的 CIDR。",
+    ),
+    (
+        "HTTP, HTTPS, or SOCKS5h proxy URL",
+        "HTTP、HTTPS 或 SOCKS5h 代理網址",
+    ),
+    (
+        "Trusted transparent proxy CIDR ranges",
+        "可信任透明代理 CIDR 網段",
+    ),
+    (
+        "One CIDR per line. Used by system proxy and trusted transparent modes for synthetic routing addresses; private and local addresses remain blocked. Proxy credentials are not supported.",
+        "每行一個 CIDR。系統代理和可信任透明代理模式會用它放行合成路由位址；私有與本機位址仍會封鎖。不支援代理認證資訊。",
+    ),
+    ("Save network settings", "儲存網路設定"),
+    ("Article network settings saved", "文章網路設定已儲存"),
+    ("System proxy", "系統代理"),
+    ("Direct connection", "直接連線"),
+    ("Explicit proxy", "明確代理"),
+    ("Trusted transparent proxy", "可信任透明代理"),
     ("About", "關於"),
     ("Updates", "更新"),
     (
@@ -966,11 +1032,16 @@ const JA: &[(&str, &str)] = &[
         "設定を初期状態に戻しました。",
     ),
     (
-        "Restore interface and translation settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
-        "保存済みの翻訳キーを含む表示・翻訳設定を初期状態に戻します。フィード、記事、Provider 接続は保持されます。",
+        "Restore interface, translation, and article network settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
+        "保存済みの翻訳キーを含む表示・翻訳・記事ネットワーク設定を初期状態に戻します。フィード、記事、Provider 接続は保持されます。",
     ),
     ("Appearance", "外観"),
     ("Developer", "開発者"),
+    ("Advanced settings", "詳細設定"),
+    (
+        "Synthetic routing CIDR ranges",
+        "合成ルーティング CIDR 範囲",
+    ),
     ("Diagnostics", "診断"),
     ("Detailed sync logging", "詳細な同期ログ"),
     (
@@ -990,6 +1061,40 @@ const JA: &[(&str, &str)] = &[
     ("{} days", "{} 日"),
     ("Copy path", "パスをコピー"),
     ("Log path copied", "ログのパスをコピーしました"),
+    ("Full-text fetch network", "全文取得のネットワーク"),
+    (
+        "Applies only when fetching an article's original page to extract full text. RSS refresh and Provider sync are not affected.",
+        "記事の元ページから全文を取得するときだけ適用されます。RSS の更新や Provider の同期には影響しません。",
+    ),
+    (
+        "System proxy mode follows configured system/environment proxies. Synthetic routing addresses are allowed only when they match the CIDRs below; private and local addresses remain blocked. Direct mode bypasses proxies.",
+        "システムプロキシモードは設定済みのシステム/環境プロキシを使用します。下記 CIDR に一致する合成ルーティングアドレスのみ許可し、プライベートとローカルのアドレスは引き続き拒否します。直接接続はプロキシを迂回します。",
+    ),
+    (
+        "System mode follows the configured system/environment proxy with strict local DNS checks. Direct bypasses proxies; explicit proxy mode delegates DNS to the proxy; transparent mode trusts only the CIDRs below.",
+        "システムモードは設定済みのシステム／環境プロキシを使いながら、ローカル DNS を厳密に検証します。直接接続はプロキシを迂回し、明示プロキシはプロキシ側で DNS を解決します。透過モードでは下記 CIDR のみを信頼します。",
+    ),
+    (
+        "HTTP, HTTPS, or SOCKS5h proxy URL",
+        "HTTP、HTTPS、SOCKS5h プロキシ URL",
+    ),
+    (
+        "Trusted transparent proxy CIDR ranges",
+        "信頼する透過プロキシの CIDR 範囲",
+    ),
+    (
+        "One CIDR per line. Used by system proxy and trusted transparent modes for synthetic routing addresses; private and local addresses remain blocked. Proxy credentials are not supported.",
+        "CIDR を1行に1つ入力してください。システムプロキシと信頼する透過プロキシモードで合成ルーティングアドレスの許可に使います。プライベート IP とローカルアドレスは引き続き拒否されます。プロキシ認証情報には対応していません。",
+    ),
+    ("Save network settings", "ネットワーク設定を保存"),
+    (
+        "Article network settings saved",
+        "記事ネットワーク設定を保存しました",
+    ),
+    ("System proxy", "システムプロキシ"),
+    ("Direct connection", "直接接続"),
+    ("Explicit proxy", "明示プロキシ"),
+    ("Trusted transparent proxy", "信頼する透過プロキシ"),
     ("About", "情報"),
     ("Development build", "開発ビルド"),
     ("Remove", "削除"),
@@ -1302,11 +1407,16 @@ const FR: &[(&str, &str)] = &[
         "Paramètres rétablis par défaut.",
     ),
     (
-        "Restore interface and translation settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
-        "Rétablit les paramètres d’interface et de traduction, y compris les clés enregistrées. Les flux, articles et connexions Provider sont conservés.",
+        "Restore interface, translation, and article network settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
+        "Rétablit les paramètres d’interface, de traduction et de réseau des articles, y compris les clés enregistrées. Les flux, articles et connexions Provider sont conservés.",
     ),
     ("Appearance", "Apparence"),
     ("Developer", "Développeur"),
+    ("Advanced settings", "Paramètres avancés"),
+    (
+        "Synthetic routing CIDR ranges",
+        "Plages CIDR de routage synthétique",
+    ),
     ("Diagnostics", "Diagnostic"),
     (
         "Detailed sync logging",
@@ -1329,6 +1439,43 @@ const FR: &[(&str, &str)] = &[
     ("{} days", "{} jours"),
     ("Copy path", "Copier le chemin"),
     ("Log path copied", "Chemin du journal copié"),
+    (
+        "Full-text fetch network",
+        "Réseau de récupération du texte intégral",
+    ),
+    (
+        "Applies only when fetching an article's original page to extract full text. RSS refresh and Provider sync are not affected.",
+        "S’applique uniquement à la récupération de la page d’origine d’un article pour en extraire le texte intégral. La mise à jour RSS et la synchronisation des fournisseurs ne sont pas concernées.",
+    ),
+    (
+        "System proxy mode follows configured system/environment proxies. Synthetic routing addresses are allowed only when they match the CIDRs below; private and local addresses remain blocked. Direct mode bypasses proxies.",
+        "Le mode proxy système utilise les proxys système ou d’environnement configurés. Seules les adresses de routage synthétiques correspondant aux CIDR ci-dessous sont autorisées ; les adresses privées et locales restent bloquées. Le mode direct contourne les proxys.",
+    ),
+    (
+        "System mode follows the configured system/environment proxy with strict local DNS checks. Direct bypasses proxies; explicit proxy mode delegates DNS to the proxy; transparent mode trusts only the CIDRs below.",
+        "Le mode système suit le proxy système ou d’environnement configuré avec une vérification stricte du DNS local. Le mode direct contourne les proxys ; le mode proxy explicite délègue le DNS au proxy ; le mode transparent ne fait confiance qu’aux CIDR ci-dessous.",
+    ),
+    (
+        "HTTP, HTTPS, or SOCKS5h proxy URL",
+        "URL de proxy HTTP, HTTPS ou SOCKS5h",
+    ),
+    (
+        "Trusted transparent proxy CIDR ranges",
+        "Plages CIDR du proxy transparent approuvé",
+    ),
+    (
+        "One CIDR per line. Used by system proxy and trusted transparent modes for synthetic routing addresses; private and local addresses remain blocked. Proxy credentials are not supported.",
+        "Une plage CIDR par ligne. Utilisée par les modes proxy système et proxy transparent approuvé pour les adresses de routage synthétiques ; les adresses privées et locales restent bloquées. L’authentification du proxy n’est pas prise en charge.",
+    ),
+    ("Save network settings", "Enregistrer les paramètres réseau"),
+    (
+        "Article network settings saved",
+        "Paramètres réseau des articles enregistrés",
+    ),
+    ("System proxy", "Proxy système"),
+    ("Direct connection", "Connexion directe"),
+    ("Explicit proxy", "Proxy explicite"),
+    ("Trusted transparent proxy", "Proxy transparent approuvé"),
     ("About", "À propos"),
     ("Development build", "Build de développement"),
     ("Remove", "Supprimer"),
@@ -1650,11 +1797,16 @@ const DE: &[(&str, &str)] = &[
         "Standardeinstellungen wiederhergestellt.",
     ),
     (
-        "Restore interface and translation settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
-        "Setzt Anzeige- und Übersetzungseinstellungen einschließlich gespeicherter Übersetzungsschlüssel zurück. Feeds, Artikel und Provider-Verbindungen bleiben erhalten.",
+        "Restore interface, translation, and article network settings, including saved translation keys, to defaults. Feeds, articles and Provider connections are kept.",
+        "Setzt Anzeige-, Übersetzungs- und Artikelnetzwerkeinstellungen einschließlich gespeicherter Übersetzungsschlüssel zurück. Feeds, Artikel und Provider-Verbindungen bleiben erhalten.",
     ),
     ("Appearance", "Darstellung"),
     ("Developer", "Entwickler"),
+    ("Advanced settings", "Erweiterte Einstellungen"),
+    (
+        "Synthetic routing CIDR ranges",
+        "CIDR-Bereiche für synthetisches Routing",
+    ),
     ("Diagnostics", "Diagnose"),
     (
         "Detailed sync logging",
@@ -1677,6 +1829,43 @@ const DE: &[(&str, &str)] = &[
     ("{} days", "{} Tage"),
     ("Copy path", "Pfad kopieren"),
     ("Log path copied", "Protokollpfad kopiert"),
+    ("Full-text fetch network", "Netzwerk für den Volltextabruf"),
+    (
+        "Applies only when fetching an article's original page to extract full text. RSS refresh and Provider sync are not affected.",
+        "Gilt nur, wenn die Originalseite eines Artikels für den Volltext abgerufen wird. RSS-Aktualisierung und Provider-Synchronisierung sind nicht betroffen.",
+    ),
+    (
+        "System proxy mode follows configured system/environment proxies. Synthetic routing addresses are allowed only when they match the CIDRs below; private and local addresses remain blocked. Direct mode bypasses proxies.",
+        "Der Systemproxy-Modus verwendet konfigurierte System- oder Umgebungsproxys. Synthetische Routing-Adressen werden nur zugelassen, wenn sie den CIDR-Bereichen unten entsprechen; private und lokale Adressen bleiben gesperrt. Der Direktmodus umgeht Proxys.",
+    ),
+    (
+        "System mode follows the configured system/environment proxy with strict local DNS checks. Direct bypasses proxies; explicit proxy mode delegates DNS to the proxy; transparent mode trusts only the CIDRs below.",
+        "Der Systemmodus verwendet den konfigurierten System- oder Umgebungsproxy und prüft lokale DNS-Ergebnisse strikt. Der Direktmodus umgeht Proxys; der explizite Proxy löst DNS selbst auf; der transparente Modus vertraut nur den CIDR-Bereichen unten.",
+    ),
+    (
+        "HTTP, HTTPS, or SOCKS5h proxy URL",
+        "HTTP-, HTTPS- oder SOCKS5h-Proxy-URL",
+    ),
+    (
+        "Trusted transparent proxy CIDR ranges",
+        "CIDR-Bereiche des vertrauenswürdigen transparenten Proxys",
+    ),
+    (
+        "One CIDR per line. Used by system proxy and trusted transparent modes for synthetic routing addresses; private and local addresses remain blocked. Proxy credentials are not supported.",
+        "Eine CIDR pro Zeile. Wird im Systemproxy- und vertrauenswürdigen Transparentmodus für synthetische Routing-Adressen verwendet; private und lokale Adressen bleiben gesperrt. Proxy-Anmeldedaten werden nicht unterstützt.",
+    ),
+    ("Save network settings", "Netzwerkeinstellungen speichern"),
+    (
+        "Article network settings saved",
+        "Netzwerkeinstellungen für Artikel gespeichert",
+    ),
+    ("System proxy", "Systemproxy"),
+    ("Direct connection", "Direkte Verbindung"),
+    ("Explicit proxy", "Expliziter Proxy"),
+    (
+        "Trusted transparent proxy",
+        "Vertrauenswürdiger transparenter Proxy",
+    ),
     ("About", "Über"),
     ("Development build", "Entwicklungsversion"),
     ("Remove", "Entfernen"),

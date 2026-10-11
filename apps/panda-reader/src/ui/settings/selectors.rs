@@ -1,4 +1,4 @@
-use crate::app::preferences::{Language, LibrarySource};
+use crate::app::preferences::{ArticleNetworkMode, Language, LibrarySource};
 use crate::ui::i18n;
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::*;
@@ -14,6 +14,37 @@ pub(in crate::ui) struct LanguageOption {
 pub(in crate::ui) struct LogRetentionOption {
     days: u16,
     language: Language,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct ArticleNetworkModeOption {
+    pub(in crate::ui) mode: ArticleNetworkMode,
+    language: Language,
+}
+
+impl ArticleNetworkModeOption {
+    pub(in crate::ui) fn all(language: Language) -> Vec<Self> {
+        ArticleNetworkMode::ALL
+            .into_iter()
+            .map(|mode| Self { mode, language })
+            .collect()
+    }
+
+    pub(in crate::ui) fn index(mode: ArticleNetworkMode) -> usize {
+        mode.index()
+    }
+}
+
+impl SearchableListItem for ArticleNetworkModeOption {
+    type Value = Self;
+
+    fn title(&self) -> SharedString {
+        SharedString::from(i18n::text(self.language, self.mode.label()))
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
+    }
 }
 
 impl LogRetentionOption {

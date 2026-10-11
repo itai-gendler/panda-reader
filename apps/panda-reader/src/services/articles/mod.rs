@@ -1,6 +1,6 @@
 pub(super) mod cache;
 mod content;
-mod fetch;
+pub(crate) mod fetch;
 
 use super::command::{TitleTranslationInput, TitleTranslationOutcome, TitleTranslationStatus};
 use super::database::DbWriter;
@@ -460,6 +460,7 @@ pub(super) fn extract(
     let cache = state.body_cache.clone();
     let plugins = state.plugin_registry.clone();
     let database = state.database.clone();
+    let fetch_network = read_lock(&state.article_fetch_network, "article fetch network").clone();
     let cancellations = state.article_work_cancellations.clone();
     let (cancel_id, cancel_receiver) = register_article_work(&cancellations, &workspace, id);
     let cleanup_cancellations = cancellations.clone();
@@ -492,7 +493,12 @@ pub(super) fn extract(
                                 anyhow::bail!("{}", diagnostic.message);
                             }
                             let referer = (resolved.url != input.url).then_some(input.url.as_str());
-                            let html = fetch::fetch_html(&resolved.url, referer).await?;
+                            let html = fetch::fetch_html_with_network(
+                                &resolved.url,
+                                referer,
+                                &fetch_network,
+                            )
+                            .await?;
                             (resolved.url, html)
                         };
                         store.prepare_extraction_from_page(

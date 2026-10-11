@@ -269,6 +269,9 @@ fn process_markdown_images(markdown: String) -> (String, Vec<String>) {
     };
     let mut replacements = Vec::new();
     collect_markdown_images(&tree, &mut replacements);
+    for replacement in &mut replacements {
+        expand_bracketed_image_range(&markdown, replacement);
+    }
     replacements.sort_by_key(|replacement| replacement.range.start);
 
     let mut image_urls = Vec::with_capacity(replacements.len());
@@ -289,6 +292,17 @@ struct MarkdownImageReplacement {
     range: std::ops::Range<usize>,
     url: String,
     alt: String,
+}
+
+fn expand_bracketed_image_range(markdown: &str, replacement: &mut MarkdownImageReplacement) {
+    let before = &markdown[..replacement.range.start];
+    let before_trimmed = before.trim_end();
+    let after = &markdown[replacement.range.end..];
+    let after_trimmed = after.trim_start();
+    if before_trimmed.ends_with('[') && after_trimmed.starts_with(']') {
+        replacement.range.start = before_trimmed.len() - 1;
+        replacement.range.end = markdown.len() - after_trimmed.len() + 1;
+    }
 }
 
 fn collect_markdown_images(

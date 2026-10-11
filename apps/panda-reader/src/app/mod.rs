@@ -69,6 +69,11 @@ pub fn run() {
         provider_settings.clone(),
         preferences.detailed_sync_logging,
         preferences.sync_log_retention_days,
+        crate::services::ArticleFetchNetwork {
+            mode: preferences.article_network_mode,
+            proxy_url: preferences.article_proxy_url.clone(),
+            trusted_fake_ip_ranges: preferences.trusted_proxy_fake_ip_ranges.clone(),
+        },
     );
     gpui_kit::application()
         .with_assets(AppAssets)

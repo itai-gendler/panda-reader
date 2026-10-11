@@ -29,14 +29,37 @@ fn migration_is_versioned_and_read_connections_do_not_change_schema() {
         )
         .unwrap();
     assert_eq!((last_id, complete), (0, 0));
-    assert!(
-        std::fs::read_dir(directory.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| entry
-                .file_name()
+    let backup_path = std::fs::read_dir(directory.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .unwrap_or_default()
                 .to_string_lossy()
-                .contains("pre-migration-"))
+                .contains("pre-migration-")
+        })
+        .expect("migration should create a pre-migration backup");
+    let backup =
+        Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let backup_version: i64 = backup
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let backup_last_id: i64 = backup
+        .query_row(
+            "SELECT last_article_id FROM article_fts_state WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(backup_version, 4);
+    assert_eq!(backup_last_id, 99);
+    assert_eq!(
+        backup
+            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
     );
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
