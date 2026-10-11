@@ -148,7 +148,12 @@ impl ReaderWindow {
                     .focus(window, cx);
                 cx.notify();
             }
-            CommandKind::ShowKeyboardShortcuts => self.open_palette(window, cx),
+            CommandKind::ShowKeyboardShortcuts => {
+                self.settings.open = true;
+                self.settings.page = SettingsPage::Reading;
+                self.settings.theme_picker_open = false;
+                cx.notify();
+            }
         }
     }
 

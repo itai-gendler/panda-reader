@@ -74,6 +74,41 @@ impl CommandItem {
     pub fn localized_title(self, language: Language) -> &'static str {
         i18n::text(language, self.title)
     }
+
+    pub fn display_chord(self, vim_navigation: bool) -> Option<String> {
+        if !vim_navigation
+            && matches!(
+                self.kind,
+                CommandKind::NextUnread
+                    | CommandKind::PreviousUnread
+                    | CommandKind::ToggleRead
+                    | CommandKind::ToggleStar
+                    | CommandKind::ToggleLater
+                    | CommandKind::OpenOriginal
+                    | CommandKind::MarkAllRead
+            )
+        {
+            return None;
+        }
+        let modifier = if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "Ctrl"
+        };
+        self.chord.map(|chord| {
+            let chord = chord.replace("Mod", modifier);
+            if vim_navigation {
+                chord
+            } else {
+                match self.kind {
+                    CommandKind::NextArticle => chord.replace(" / j", ""),
+                    CommandKind::PreviousArticle => chord.replace(" / k", ""),
+                    CommandKind::Refresh => chord.replace(" / r", ""),
+                    _ => chord,
+                }
+            }
+        })
+    }
 }
 
 pub fn catalog() -> &'static [CommandItem] {
@@ -83,14 +118,14 @@ pub fn catalog() -> &'static [CommandItem] {
             group: CommandGroup::Navigate,
             title: "Next article",
             aliases: &["next", "j", "down"],
-            chord: Some("Ctrl+] / j"),
+            chord: Some("Mod+] / ↓ / j"),
         },
         CommandItem {
             kind: CommandKind::PreviousArticle,
             group: CommandGroup::Navigate,
             title: "Previous article",
             aliases: &["prev", "previous", "k", "up"],
-            chord: Some("Ctrl+[ / k"),
+            chord: Some("Mod+[ / ↑ / k"),
         },
         CommandItem {
             kind: CommandKind::NextUnread,
@@ -167,7 +202,7 @@ pub fn catalog() -> &'static [CommandItem] {
             group: CommandGroup::Article,
             title: "Re-fetch current article",
             aliases: &["force refresh", "refresh article", "re-fetch"],
-            chord: Some("Shift+Ctrl/Cmd+R"),
+            chord: Some("Shift+Mod+R"),
         },
         CommandItem {
             kind: CommandKind::Translate,
@@ -216,14 +251,14 @@ pub fn catalog() -> &'static [CommandItem] {
             group: CommandGroup::Feeds,
             title: "Refresh feeds",
             aliases: &["sync", "reload", "r"],
-            chord: Some("Ctrl+R / r"),
+            chord: Some("Mod+R / r"),
         },
         CommandItem {
             kind: CommandKind::AddFeed,
             group: CommandGroup::Feeds,
             title: "Add feed",
             aliases: &["subscribe", "new feed"],
-            chord: None,
+            chord: Some("Mod+N"),
         },
         CommandItem {
             kind: CommandKind::MarkAllRead,
@@ -244,14 +279,14 @@ pub fn catalog() -> &'static [CommandItem] {
             group: CommandGroup::View,
             title: "Toggle sidebar",
             aliases: &["sidebar", "collapse"],
-            chord: Some("Ctrl+B"),
+            chord: Some("Mod+B"),
         },
         CommandItem {
             kind: CommandKind::OpenSettings,
             group: CommandGroup::View,
             title: "Open Settings",
             aliases: &["preferences", "general"],
-            chord: Some("Ctrl+,"),
+            chord: Some("Mod+,"),
         },
         CommandItem {
             kind: CommandKind::OpenAppearance,
@@ -279,21 +314,21 @@ pub fn catalog() -> &'static [CommandItem] {
             group: CommandGroup::View,
             title: "Focus search",
             aliases: &["find", "filter articles"],
-            chord: Some("Ctrl+F"),
+            chord: Some("Mod+F"),
         },
         CommandItem {
             kind: CommandKind::TogglePalette,
             group: CommandGroup::Application,
             title: "Command Palette",
             aliases: &["palette", "commands", "search everywhere"],
-            chord: Some("Ctrl+K"),
+            chord: Some("Mod+K"),
         },
         CommandItem {
             kind: CommandKind::ShowKeyboardShortcuts,
             group: CommandGroup::Application,
             title: "Keyboard shortcuts",
             aliases: &["hotkeys", "keymap", "vim", "help"],
-            chord: Some("Ctrl+/"),
+            chord: Some("Mod+/"),
         },
     ]
 }

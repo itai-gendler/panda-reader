@@ -161,7 +161,7 @@ impl PaletteState {
             let is_selected = index == selected;
             let kind = item.kind;
             let title = item.localized_title(language);
-            let chord = item.chord;
+            let chord = item.display_chord(owner.preferences.vim_navigation);
             rows = rows.child(
                 h_flex()
                     .id(("palette-row", index))

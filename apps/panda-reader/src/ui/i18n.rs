@@ -56,6 +56,7 @@ const ZH_CN: &[(&str, &str)] = &[
         "刷新订阅（按住 Shift 点击强制刷新）",
     ),
     ("Re-fetch current article", "重新抓取当前文章"),
+    ("Quit", "退出"),
     ("Select an article first", "请先选择一篇文章"),
     ("Feed", "订阅"),
     ("Loading articles…", "正在载入文章…"),
@@ -267,8 +268,8 @@ const ZH_CN: &[(&str, &str)] = &[
     ("Branding", "品牌标识"),
     ("Show panda icon", "显示熊猫图标"),
     (
-        "Display the panda in the top-left corner.",
-        "在左上角显示熊猫图标。",
+        "Display the panda in the title bar.",
+        "在标题栏显示熊猫图标。",
     ),
     ("Interface size", "界面尺寸"),
     (
@@ -448,10 +449,6 @@ const ZH_CN: &[(&str, &str)] = &[
         "未在输入框中时，可用 j/k、s、u、l 等单键导航。",
     ),
     ("Keyboard", "键盘"),
-    (
-        "Open the Command Palette with Ctrl/Cmd+K anytime.",
-        "随时可用 Ctrl/Cmd+K 打开命令面板。",
-    ),
     ("Type a command…", "输入命令…"),
     ("No matching commands", "没有匹配的命令"),
     (
@@ -509,6 +506,7 @@ const ZH_TW: &[(&str, &str)] = &[
         "重新整理訂閱（按住 Shift 點擊強制更新）",
     ),
     ("Re-fetch current article", "重新擷取目前文章"),
+    ("Quit", "結束"),
     ("Select an article first", "請先選擇一篇文章"),
     ("Feed", "訂閱"),
     ("Loading articles…", "正在載入文章…"),
@@ -704,8 +702,8 @@ const ZH_TW: &[(&str, &str)] = &[
     ("Branding", "品牌標識"),
     ("Show panda icon", "顯示熊貓圖示"),
     (
-        "Display the panda in the top-left corner.",
-        "在左上角顯示熊貓圖示。",
+        "Display the panda in the title bar.",
+        "在標題列顯示熊貓圖示。",
     ),
     ("Interface size", "介面尺寸"),
     (
@@ -873,6 +871,7 @@ const JA: &[(&str, &str)] = &[
         "フィードを更新（Shift+クリックで強制更新）",
     ),
     ("Re-fetch current article", "現在の記事を再取得"),
+    ("Quit", "終了"),
     ("Select an article first", "先に記事を選択してください"),
     ("Feed", "フィード"),
     ("Loading articles…", "記事を読み込み中…"),
@@ -1027,8 +1026,8 @@ const JA: &[(&str, &str)] = &[
     ("Branding", "ブランド"),
     ("Show panda icon", "パンダのアイコンを表示"),
     (
-        "Display the panda in the top-left corner.",
-        "左上隅にパンダのアイコンを表示します。",
+        "Display the panda in the title bar.",
+        "タイトルバーにパンダのアイコンを表示します。",
     ),
     ("Interface size", "インターフェースサイズ"),
     (
@@ -1198,6 +1197,7 @@ const FR: &[(&str, &str)] = &[
         "Re-fetch current article",
         "Récupérer à nouveau l’article actuel",
     ),
+    ("Quit", "Quitter"),
     ("Select an article first", "Sélectionnez d’abord un article"),
     ("Feed", "Flux"),
     ("Loading articles…", "Chargement des articles…"),
@@ -1361,8 +1361,8 @@ const FR: &[(&str, &str)] = &[
     ("Branding", "Identité visuelle"),
     ("Show panda icon", "Afficher l’icône du panda"),
     (
-        "Display the panda in the top-left corner.",
-        "Afficher le panda dans le coin supérieur gauche.",
+        "Display the panda in the title bar.",
+        "Afficher le panda dans la barre de titre.",
     ),
     ("Interface size", "Taille de l’interface"),
     (
@@ -1541,6 +1541,7 @@ const DE: &[(&str, &str)] = &[
         "Re-fetch current article",
         "Aktuellen Artikel erneut abrufen",
     ),
+    ("Quit", "Beenden"),
     ("Select an article first", "Wähle zuerst einen Artikel aus"),
     ("Feed", "Feed"),
     ("Loading articles…", "Artikel werden geladen…"),
@@ -1704,8 +1705,8 @@ const DE: &[(&str, &str)] = &[
     ("Branding", "Markenauftritt"),
     ("Show panda icon", "Panda-Symbol anzeigen"),
     (
-        "Display the panda in the top-left corner.",
-        "Den Panda oben links anzeigen.",
+        "Display the panda in the title bar.",
+        "Den Panda in der Titelleiste anzeigen.",
     ),
     ("Interface size", "Oberflächengröße"),
     (

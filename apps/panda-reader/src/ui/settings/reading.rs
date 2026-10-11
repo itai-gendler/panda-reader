@@ -20,23 +20,49 @@ impl Settings {
         cx: &mut Context<ReaderWindow>,
     ) -> impl IntoElement {
         let collapsed = owner.preferences.sidebar_collapsed;
-        let shortcuts = [
-            ("j", "Next article"),
-            ("k", "Previous article"),
-            ("Shift+J", "Next unread"),
-            ("Shift+K", "Previous unread"),
-            ("u", "Toggle read"),
-            ("s", "Toggle star"),
-            ("l", "Toggle Read Later"),
-            ("r", "Refresh feeds"),
-            ("Shift+Ctrl/Cmd+R", "Re-fetch current article"),
-            ("o", "Open original"),
-            ("x", "Mark all as read"),
-        ]
-        .into_iter()
-        .fold(v_flex().gap_1().pt_2(), |list, (keys, label)| {
-            list.child(self.keyboard_shortcut_row(owner, keys, label, cx))
-        });
+        let modifier = if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "Ctrl"
+        };
+        let mut shortcut_rows = vec![
+            (format!("{modifier}+K"), "Command Palette"),
+            (format!("{modifier}+N"), "Add feed"),
+            (format!("{modifier}+,"), "Open Settings"),
+            (format!("{modifier}+F"), "Focus search"),
+            (format!("{modifier}+R"), "Refresh feeds"),
+            (format!("Shift+{modifier}+R"), "Re-fetch current article"),
+            (format!("{modifier}+B"), "Toggle sidebar"),
+            (format!("{modifier}+[ / ↑"), "Previous article"),
+            (format!("{modifier}+] / ↓"), "Next article"),
+            (format!("{modifier}+/"), "Keyboard shortcuts"),
+        ];
+        if cfg!(target_os = "macos") {
+            shortcut_rows.insert(0, ("⌘+Q".into(), "Quit"));
+        }
+        if owner.preferences.vim_navigation {
+            shortcut_rows.extend(
+                [
+                    ("j", "Next article"),
+                    ("k", "Previous article"),
+                    ("Shift+J", "Next unread"),
+                    ("Shift+K", "Previous unread"),
+                    ("u", "Toggle read"),
+                    ("s", "Toggle star"),
+                    ("l", "Toggle Read Later"),
+                    ("r", "Refresh feeds"),
+                    ("o", "Open original"),
+                    ("x", "Mark all as read"),
+                ]
+                .into_iter()
+                .map(|(keys, label)| (keys.into(), label)),
+            );
+        }
+        let shortcuts = shortcut_rows
+            .into_iter()
+            .fold(v_flex().gap_1().pt_2(), |list, (keys, label)| {
+                list.child(self.keyboard_shortcut_row(owner, &keys, label, cx))
+            });
         v_flex()
             .child(self.settings_heading(owner, "Reading"))
             .child(div().pb_2().font_semibold().child(owner.t("Typography")))
@@ -192,13 +218,6 @@ impl Settings {
                             })),
                     ),
             )
-            .child(
-                div()
-                    .pt_2()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(owner.t("Open the Command Palette with Ctrl/Cmd+K anytime.")),
-            )
             .child(shortcuts)
             .child(div().my_5().border_t_1().border_color(cx.theme().border))
             .child(div().pb_2().font_semibold().child(owner.t("Sharing")))
@@ -276,7 +295,7 @@ impl Settings {
     pub(in crate::ui) fn keyboard_shortcut_row(
         &self,
         owner: &ReaderWindow,
-        keys: &'static str,
+        keys: &str,
         label: &'static str,
         cx: &Context<ReaderWindow>,
     ) -> impl IntoElement {
@@ -299,7 +318,7 @@ impl Settings {
                     .bg(cx.theme().muted)
                     .text_xs()
                     .font_semibold()
-                    .child(keys),
+                    .child(keys.to_owned()),
             )
     }
 

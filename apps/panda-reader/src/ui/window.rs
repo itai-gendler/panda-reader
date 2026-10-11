@@ -1,8 +1,8 @@
 use super::commands::keymap::{
-    FocusSearch, ForceRefreshArticle, LoadMoreArticles, NextArticle, OpenSettings, PreviousArticle,
-    RefreshFeeds, ShowKeyboardShortcuts, TogglePalette, ToggleSidebar, VimMarkAllRead,
-    VimNextArticle, VimNextUnread, VimOpenOriginal, VimPreviousArticle, VimPreviousUnread,
-    VimRefresh, VimShowHelp, VimToggleLater, VimToggleRead, VimToggleStar,
+    AddFeed, FocusSearch, ForceRefreshArticle, LoadMoreArticles, NextArticle, OpenSettings,
+    PreviousArticle, RefreshFeeds, ShowKeyboardShortcuts, TogglePalette, ToggleSidebar,
+    VimMarkAllRead, VimNextArticle, VimNextUnread, VimOpenOriginal, VimPreviousArticle,
+    VimPreviousUnread, VimRefresh, VimShowHelp, VimToggleLater, VimToggleRead, VimToggleStar,
 };
 use super::{
     article_list::ArticleList, article_view::ArticleView, feed_editor::FeedEditor,
@@ -200,6 +200,9 @@ impl Render for ReaderWindow {
             .on_action(cx.listener(|this, _: &ForceRefreshArticle, window, cx| {
                 this.handle_chord(CommandKind::ForceRefreshArticle, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &AddFeed, window, cx| {
+                this.handle_chord(CommandKind::AddFeed, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.handle_chord(CommandKind::OpenSettings, window, cx);
             }))
@@ -326,6 +329,12 @@ impl ReaderWindow {
     fn render_title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let collapsed = self.preferences.sidebar_collapsed;
         let open = self.settings.open;
+        let title_bar_left_padding = if cfg!(target_os = "macos") {
+            // Leave room for the native traffic lights provided by GPUI's title bar.
+            px(76.)
+        } else {
+            px(12.)
+        };
         h_flex()
             .h(px(40.))
             .flex_shrink_0()
@@ -337,9 +346,25 @@ impl ReaderWindow {
                 h_flex()
                     .h_full()
                     .w(px(228.))
-                    .pl(px(12.))
+                    .pl(if cfg!(target_os = "macos") {
+                        px(0.)
+                    } else {
+                        px(12.)
+                    })
                     .items_center()
                     .gap_1()
+                    .when(cfg!(target_os = "macos"), |row| {
+                        row.child(
+                            div()
+                                .w(title_bar_left_padding)
+                                .h_full()
+                                .flex_shrink_0()
+                                .window_control_area(WindowControlArea::Drag)
+                                .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                    window.start_window_move();
+                                }),
+                        )
+                    })
                     .when(self.preferences.show_app_icon, |row| {
                         row.child(img(APP_ICON.clone()).size_5().rounded(cx.theme().radius))
                     })

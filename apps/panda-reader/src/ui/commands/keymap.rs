@@ -5,9 +5,11 @@ use gpui_kit::{App, KeyBinding, Unbind, actions};
 actions!(
     panda_reader,
     [
+        Quit,
         TogglePalette,
         RefreshFeeds,
         ForceRefreshArticle,
+        AddFeed,
         OpenSettings,
         FocusSearch,
         ToggleSidebar,
@@ -43,7 +45,10 @@ actions!(
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
+        // Keep the conventional macOS quit shortcut independent of focused UI elements.
+        KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("secondary-k", TogglePalette, None),
+        KeyBinding::new("secondary-n", AddFeed, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-r", RefreshFeeds, None),
         KeyBinding::new("secondary-shift-r", ForceRefreshArticle, None),
@@ -52,6 +57,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-]", NextArticle, None),
         KeyBinding::new("secondary-[", PreviousArticle, None),
         KeyBinding::new("secondary-/", ShowKeyboardShortcuts, None),
+        KeyBinding::new("down", NextArticle, Some("Reader")),
+        KeyBinding::new("up", PreviousArticle, Some("Reader")),
         // Vim-style (handlers no-op when typing or vim_navigation is off)
         KeyBinding::new("j", VimNextArticle, Some("Reader")),
         KeyBinding::new("k", VimPreviousArticle, Some("Reader")),
@@ -66,17 +73,71 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-/", VimShowHelp, Some("Reader")),
         // Printable Vim keys must reach text inputs. A no-op in the action
         // handler is too late because the key binding has already consumed it.
-        KeyBinding::new("j", Unbind("panda_reader::VimNextArticle".into()), Some("Input")),
-        KeyBinding::new("k", Unbind("panda_reader::VimPreviousArticle".into()), Some("Input")),
-        KeyBinding::new("shift-j", Unbind("panda_reader::VimNextUnread".into()), Some("Input")),
-        KeyBinding::new("shift-k", Unbind("panda_reader::VimPreviousUnread".into()), Some("Input")),
-        KeyBinding::new("u", Unbind("panda_reader::VimToggleRead".into()), Some("Input")),
-        KeyBinding::new("s", Unbind("panda_reader::VimToggleStar".into()), Some("Input")),
-        KeyBinding::new("l", Unbind("panda_reader::VimToggleLater".into()), Some("Input")),
-        KeyBinding::new("r", Unbind("panda_reader::VimRefresh".into()), Some("Input")),
-        KeyBinding::new("o", Unbind("panda_reader::VimOpenOriginal".into()), Some("Input")),
-        KeyBinding::new("x", Unbind("panda_reader::VimMarkAllRead".into()), Some("Input")),
-        KeyBinding::new("shift-/", Unbind("panda_reader::VimShowHelp".into()), Some("Input")),
+        KeyBinding::new(
+            "j",
+            Unbind("panda_reader::VimNextArticle".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "k",
+            Unbind("panda_reader::VimPreviousArticle".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "shift-j",
+            Unbind("panda_reader::VimNextUnread".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "shift-k",
+            Unbind("panda_reader::VimPreviousUnread".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "u",
+            Unbind("panda_reader::VimToggleRead".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "s",
+            Unbind("panda_reader::VimToggleStar".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "l",
+            Unbind("panda_reader::VimToggleLater".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "r",
+            Unbind("panda_reader::VimRefresh".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "o",
+            Unbind("panda_reader::VimOpenOriginal".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "x",
+            Unbind("panda_reader::VimMarkAllRead".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "shift-/",
+            Unbind("panda_reader::VimShowHelp".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "down",
+            Unbind("panda_reader::NextArticle".into()),
+            Some("Input"),
+        ),
+        KeyBinding::new(
+            "up",
+            Unbind("panda_reader::PreviousArticle".into()),
+            Some("Input"),
+        ),
         // Palette chrome
         KeyBinding::new("escape", PaletteDismiss, Some("Palette")),
         KeyBinding::new("up", PaletteMoveUp, Some("Palette")),
@@ -85,4 +146,5 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-n", PaletteMoveDown, Some("Palette")),
         KeyBinding::new("enter", PaletteConfirm, Some("Palette")),
     ]);
+    cx.on_action(|_: &Quit, cx| cx.quit());
 }
