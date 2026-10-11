@@ -3,6 +3,7 @@
 use panda_providers::{ProviderKind, ProviderSettings, save_settings};
 
 use super::articles::cache::RenderCache;
+use super::command::QueuedCommand;
 use super::database::DbWriter;
 use super::diagnostics;
 use super::{Command, dispatch};
@@ -19,12 +20,14 @@ use std::{
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard,
         atomic::{AtomicBool, Ordering},
-        mpsc as std_mpsc,
-        mpsc::{SyncSender, TrySendError},
     },
     thread,
 };
 use tokio::sync::{mpsc, oneshot};
+
+pub(super) use super::task_coordinator::{
+    background_job, job, title_job, try_background_job, try_job,
+};
 
 pub(super) type TranslationJobKey = (String, i64, String, i64, String, String);
 
@@ -35,7 +38,7 @@ const COMMAND_QUEUE_CAPACITY: usize = 512;
 
 #[derive(Clone)]
 pub struct AppServices {
-    sender: mpsc::Sender<Command>,
+    sender: mpsc::Sender<QueuedCommand>,
     workspace: Arc<RwLock<String>>,
     detailed_sync_logging: Arc<AtomicBool>,
     database_path: PathBuf,
@@ -108,13 +111,12 @@ impl AppServices {
         let database_path = path.clone();
         let settings = Arc::new(RwLock::new(initial_settings));
         let workspace = Arc::new(RwLock::new(active_workspace.to_owned()));
-        let worker_workspace = workspace.clone();
         let article_work_cancellations = Arc::new(Mutex::new(HashMap::new()));
         let worker_article_work_cancellations = article_work_cancellations.clone();
         let detailed_sync_logging = Arc::new(AtomicBool::new(detailed_sync_logging));
         let worker_detailed_sync_logging = detailed_sync_logging.clone();
         let body_cache = Arc::new(Mutex::new(RenderCache::default()));
-        let (sender, mut receiver) = mpsc::channel::<Command>(COMMAND_QUEUE_CAPACITY);
+        let (sender, mut receiver) = mpsc::channel::<QueuedCommand>(COMMAND_QUEUE_CAPACITY);
         thread::Builder::new()
             .name("panda-reader-services".into())
             .spawn(move || {
@@ -164,7 +166,6 @@ impl AppServices {
                         plugin_registry: Arc::new(RwLock::new(load_plugin_registry(&plugin_dir))),
                         provider_settings_path,
                         provider_settings: settings.clone(),
-                        active_workspace: worker_workspace,
                         detailed_sync_logging: worker_detailed_sync_logging,
                         body_cache,
                         title_translation_attempted: Arc::new(Mutex::new(HashMap::new())),
@@ -179,7 +180,7 @@ impl AppServices {
                         };
                         if let Err(panic) =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                dispatch::handle(command, &state)
+                                dispatch::handle(command.command, command.workspace, &state)
                             }))
                         {
                             eprintln!(
@@ -201,7 +202,9 @@ impl AppServices {
     }
 
     pub fn send(&self, command: Command) {
-        if let Err(error) = self.sender.try_send(command) {
+        let queued =
+            QueuedCommand::capture(&read_lock(&self.workspace, "active workspace"), command);
+        if let Err(error) = self.sender.try_send(queued) {
             let (command, message) = match error {
                 mpsc::error::TrySendError::Full(command) => (
                     command,
@@ -212,7 +215,7 @@ impl AppServices {
                     "Panda Reader background services are unavailable".to_owned(),
                 ),
             };
-            command.reject(message);
+            command.command.reject(message);
         }
     }
 
@@ -242,7 +245,6 @@ pub struct WorkerState {
     pub plugin_dir: PathBuf,
     pub plugin_registry: Arc<RwLock<PluginRegistry>>,
     pub provider_settings: Arc<RwLock<ProviderSettingsMap>>,
-    pub active_workspace: Arc<RwLock<String>>,
     pub detailed_sync_logging: Arc<AtomicBool>,
     pub body_cache: Arc<Mutex<RenderCache>>,
     pub title_translation_attempted: Arc<Mutex<HashMap<String, std::time::Instant>>>,
@@ -281,12 +283,8 @@ fn load_plugin_registry(plugin_dir: &std::path::Path) -> PluginRegistry {
 }
 
 impl WorkerState {
-    pub fn workspace(&self) -> String {
-        read_lock(&self.active_workspace, "active workspace").clone()
-    }
-
-    pub fn provider_kind(&self) -> Option<ProviderKind> {
-        match self.workspace().as_str() {
+    pub fn provider_kind_for(&self, workspace: &str) -> Option<ProviderKind> {
+        match workspace {
             "provider:miniflux" => Some(ProviderKind::Miniflux),
             "provider:freshrss" => Some(ProviderKind::FreshRss),
             _ => None,
@@ -629,136 +627,6 @@ async fn download_plugin_archive(source: &str) -> anyhow::Result<Vec<u8>> {
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
-}
-
-pub(super) fn job<T: Send + 'static>(
-    reply: oneshot::Sender<Result<T, String>>,
-    run: impl FnOnce(&tokio::runtime::Runtime) -> Result<T, String> + Send + 'static,
-) {
-    let _ = try_job(reply, run);
-}
-
-pub(super) fn try_job<T: Send + 'static>(
-    reply: oneshot::Sender<Result<T, String>>,
-    run: impl FnOnce(&tokio::runtime::Runtime) -> Result<T, String> + Send + 'static,
-) -> bool {
-    type BackgroundJob = Box<dyn FnOnce(&tokio::runtime::Runtime) + Send + 'static>;
-    static JOBS: OnceLock<SyncSender<BackgroundJob>> = OnceLock::new();
-    let sender = JOBS.get_or_init(|| {
-        let (sender, receiver) = std_mpsc::sync_channel::<BackgroundJob>(256);
-        let receiver = Arc::new(Mutex::new(receiver));
-        for index in 0..4 {
-            let receiver = receiver.clone();
-            thread::Builder::new()
-                .name(format!("panda-reader-worker-{index}"))
-                .spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("failed to start background worker runtime");
-                    loop {
-                        let next = {
-                            let receiver = lock_mutex(&receiver, "background job queue");
-                            receiver.recv()
-                        };
-                        let Ok(job) = next else { break };
-                        job(&runtime);
-                    }
-                })
-                .expect("failed to start background worker");
-        }
-        sender
-    });
-    let reply_slot = Arc::new(Mutex::new(Some(reply)));
-    let worker_reply = reply_slot.clone();
-    let task: BackgroundJob = Box::new(move |runtime| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(runtime)))
-            .unwrap_or_else(|panic| {
-                Err(format!(
-                    "Background operation panicked: {}",
-                    panic_message(&*panic)
-                ))
-            });
-        if let Some(reply) = lock_mutex(&worker_reply, "background job reply").take() {
-            let _ = reply.send(result);
-        }
-    });
-    match sender.try_send(task) {
-        Ok(()) => true,
-        Err(error) => {
-            let (task, message) = match error {
-                TrySendError::Full(task) => {
-                    (task, "Background task queue is full; try again shortly")
-                }
-                TrySendError::Disconnected(task) => {
-                    (task, "Background task workers are unavailable")
-                }
-            };
-            drop(task);
-            if let Some(reply) = lock_mutex(&reply_slot, "background job reply").take() {
-                let _ = reply.send(Err(message.to_owned()));
-            }
-            false
-        }
-    }
-}
-
-/// Title batches use a dedicated serial queue so they cannot occupy the general
-/// worker pool while waiting for another title translation to finish.
-pub(super) fn title_job<T: Send + 'static>(
-    reply: oneshot::Sender<Result<T, String>>,
-    run: impl FnOnce(&tokio::runtime::Runtime) -> Result<T, String> + Send + 'static,
-) {
-    type BackgroundJob = Box<dyn FnOnce(&tokio::runtime::Runtime) + Send + 'static>;
-    static TITLE_JOBS: OnceLock<SyncSender<BackgroundJob>> = OnceLock::new();
-    let sender = TITLE_JOBS.get_or_init(|| {
-        let (sender, receiver) = std_mpsc::sync_channel::<BackgroundJob>(128);
-        thread::Builder::new()
-            .name("panda-reader-title-translation".into())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("failed to start title translation runtime");
-                while let Ok(job) = receiver.recv() {
-                    job(&runtime);
-                }
-            })
-            .expect("failed to start title translation worker");
-        sender
-    });
-
-    let reply_slot = Arc::new(Mutex::new(Some(reply)));
-    let worker_reply = reply_slot.clone();
-    let task: BackgroundJob = Box::new(move |runtime| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(runtime)))
-            .unwrap_or_else(|panic| {
-                Err(format!(
-                    "Background operation panicked: {}",
-                    panic_message(&*panic)
-                ))
-            });
-        if let Some(reply) = lock_mutex(&worker_reply, "title translation reply").take() {
-            let _ = reply.send(result);
-        }
-    });
-    match sender.try_send(task) {
-        Ok(()) => {}
-        Err(error) => {
-            let (task, message) = match error {
-                TrySendError::Full(task) => {
-                    (task, "Title translation queue is full; try again shortly")
-                }
-                TrySendError::Disconnected(task) => {
-                    (task, "Title translation worker is unavailable")
-                }
-            };
-            drop(task);
-            if let Some(reply) = lock_mutex(&reply_slot, "title translation reply").take() {
-                let _ = reply.send(Err(message.to_owned()));
-            }
-        }
-    }
 }
 
 fn panic_message(panic: &(dyn Any + Send)) -> &str {

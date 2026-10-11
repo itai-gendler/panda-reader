@@ -9,6 +9,22 @@ pub struct ConnectOutcome {
     pub account_name: String,
 }
 
+/// Captured when a command enters the service queue so later workspace switches
+/// cannot redirect its database operation.
+pub struct QueuedCommand {
+    pub workspace: String,
+    pub command: Command,
+}
+
+impl QueuedCommand {
+    pub fn capture(workspace: &str, command: Command) -> Self {
+        Self {
+            workspace: workspace.to_owned(),
+            command,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TitleTranslationInput {
     pub id: i64,
@@ -215,5 +231,28 @@ impl Command {
                 let _ = reply.send(Err(message));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_command_keeps_the_workspace_captured_at_enqueue_time() {
+        let mut active_workspace = String::from("provider:miniflux");
+        let (reply, _result) = oneshot::channel();
+        let queued = QueuedCommand::capture(
+            &active_workspace,
+            Command::MarkAllRead {
+                scope: Scope::All,
+                search: String::new(),
+                reply,
+            },
+        );
+
+        active_workspace = "local".into();
+        assert_eq!(active_workspace, "local");
+        assert_eq!(queued.workspace, "provider:miniflux");
     }
 }

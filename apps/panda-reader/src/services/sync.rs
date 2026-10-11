@@ -1,7 +1,7 @@
 use super::articles::cache::RenderCache;
 use super::database::DbWriter;
 use super::diagnostics::{LogDetail, write_sync_log};
-use super::worker::{WorkerState, job, remote_mark_lock};
+use super::worker::{WorkerState, background_job, remote_mark_lock};
 use panda_providers::{ProviderClient, ProviderKind, SyncMode};
 use panda_store::{PendingRemoteMark, Store};
 use std::path::Path;
@@ -21,17 +21,17 @@ fn sync_log(
 }
 
 pub(super) fn refresh_feed(
+    workspace: String,
     id: i64,
     reply: oneshot::Sender<Result<usize, String>>,
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
-    let provider = state.provider_kind();
+    let provider = state.provider_kind_for(&workspace);
     let config = provider.and_then(|kind| state.provider_settings(kind));
     let database = state.database.clone();
     let detailed_logging = state.detailed_sync_logging.clone();
-    job(reply, move |runtime| {
+    background_job(reply, move |runtime| {
         let started = Instant::now();
         let result = (|| {
             if let (Some(kind), Some(config)) = (provider, config) {
@@ -91,7 +91,7 @@ pub(super) fn refresh_feed(
                 let input = Store::open_read_workspace(&path, &workspace)
                     .and_then(|store| store.local_feed_refresh_input(id))
                     .map_err(|e| e.to_string())?;
-                match runtime.block_on(Store::fetch_feed_data(
+                match runtime.block_on(super::feed_fetch::fetch_feed_data(
                     &input.url,
                     input.etag.as_deref(),
                     input.modified.as_deref(),
@@ -148,18 +148,18 @@ pub(super) fn refresh_feed(
 }
 
 pub(super) fn refresh(
+    workspace: String,
     force: bool,
     reply: oneshot::Sender<Result<usize, String>>,
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
-    let provider = state.provider_kind();
+    let provider = state.provider_kind_for(&workspace);
     let config = provider.and_then(|kind| state.provider_settings(kind));
     let cache = state.body_cache.clone();
     let database = state.database.clone();
     let detailed_logging = state.detailed_sync_logging.clone();
-    job(reply, move |runtime| {
+    background_job(reply, move |runtime| {
         let started = Instant::now();
         sync_log(
             &path,
@@ -285,7 +285,7 @@ fn refresh_local_feeds(
                     .acquire_owned()
                     .await
                     .map_err(|error| error.to_string())?;
-                let result = Store::fetch_feed_data(
+                let result = super::feed_fetch::fetch_feed_data(
                     &feed.url,
                     if force { None } else { feed.etag.as_deref() },
                     if force {

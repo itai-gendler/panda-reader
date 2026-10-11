@@ -145,20 +145,19 @@ impl TranslatorConfig {
             std::fs::create_dir_all(parent)?;
         }
         let bytes = serde_json::to_vec_pretty(self)?;
+        use std::io::Write as _;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(&bytes)?;
+        temporary.as_file().sync_all()?;
         #[cfg(unix)]
         {
-            use std::io::Write as _;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(path)?;
-            file.write_all(&bytes)?;
+            use std::os::unix::fs::PermissionsExt as _;
+            temporary
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
-        #[cfg(not(unix))]
-        std::fs::write(path, bytes)?;
+        temporary.persist(path).map_err(|error| error.error)?;
         Ok(())
     }
 
@@ -449,4 +448,27 @@ pub fn target_lang_for_ui(language: &str) -> &'static str {
 
 pub fn target_lang_from_serde_language(language: impl AsRef<str>) -> String {
     target_lang_for_ui(language.as_ref()).to_owned()
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn translator_settings_replace_existing_file_with_complete_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("translator.json");
+        std::fs::write(&path, "old partial data").unwrap();
+        let config = TranslatorConfig {
+            provider: Provider::OpenAiCompatible,
+            openai_key: "private-token".into(),
+            ..TranslatorConfig::default()
+        };
+
+        config.save(&path).unwrap();
+
+        let loaded = TranslatorConfig::load(&path).unwrap();
+        assert_eq!(loaded.provider, Provider::OpenAiCompatible);
+        assert_eq!(loaded.openai_key, "private-token");
+    }
 }

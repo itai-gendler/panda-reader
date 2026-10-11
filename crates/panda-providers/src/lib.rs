@@ -145,21 +145,19 @@ pub fn save_settings(path: &Path, settings: &ProviderSettingsMap) -> anyhow::Res
         std::fs::create_dir_all(parent)?;
     }
     let bytes = serde_json::to_vec_pretty(settings)?;
+    use std::io::Write as _;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file().sync_all()?;
     #[cfg(unix)]
     {
-        use std::io::Write as _;
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(&bytes)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::PermissionsExt as _;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    #[cfg(not(unix))]
-    std::fs::write(path, bytes)?;
+    temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -624,5 +622,26 @@ mod tests {
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn provider_settings_replace_existing_file_with_complete_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("providers.json");
+        std::fs::write(&path, "old partial data").unwrap();
+        let mut settings = ProviderSettingsMap::new();
+        settings.insert(
+            ProviderKind::FreshRss,
+            ProviderSettings {
+                endpoint: "https://reader.example.net/api/greader.php".into(),
+                username: "reader".into(),
+                secret: "private-token".into(),
+            },
+        );
+
+        save_settings(&path, &settings).unwrap();
+
+        let loaded = load_settings(&path).unwrap();
+        assert_eq!(loaded, settings);
     }
 }

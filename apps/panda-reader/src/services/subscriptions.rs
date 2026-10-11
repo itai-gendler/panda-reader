@@ -5,13 +5,13 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 pub(super) fn add_feed(
+    workspace: String,
     url: String,
     reply: oneshot::Sender<Result<(), String>>,
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
-    let provider = state.provider_kind();
+    let provider = state.provider_kind_for(&workspace);
     let config = provider.and_then(|kind| state.provider_settings(kind));
     let database = state.database.clone();
     let detailed_logging = state.detailed_sync_logging.clone();
@@ -37,7 +37,7 @@ pub(super) fn add_feed(
             let read = Store::open_read_workspace(&path, &workspace).map_err(|e| e.to_string())?;
             if !read.has_feed_url(&normalized).map_err(|e| e.to_string())? {
                 let fetched = runtime
-                    .block_on(Store::fetch_feed_data(&normalized, None, None))
+                    .block_on(super::feed_fetch::fetch_feed_data(&normalized, None, None))
                     .map_err(|e| e.to_string())?;
                 let prepared =
                     Store::prepare_fetched_feed(&normalized, fetched).map_err(|e| e.to_string())?;
@@ -53,13 +53,13 @@ pub(super) fn add_feed(
 }
 
 pub(super) fn remove_feed(
+    workspace: String,
     id: i64,
     reply: oneshot::Sender<Result<(), String>>,
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
-    let provider = state.provider_kind();
+    let provider = state.provider_kind_for(&workspace);
     let config = provider.and_then(|kind| state.provider_settings(kind));
     let database = state.database.clone();
     job(reply, move |runtime| {
@@ -83,6 +83,7 @@ pub(super) fn remove_feed(
 }
 
 pub(super) fn update_feed(
+    workspace: String,
     id: i64,
     title: String,
     folder: Option<String>,
@@ -91,7 +92,6 @@ pub(super) fn update_feed(
     reply: oneshot::Sender<Result<(), String>>,
     state: &WorkerState,
 ) {
-    let workspace = state.workspace();
     let database = state.database.clone();
     job(reply, move |_| {
         if workspace != "local" {
@@ -110,12 +110,12 @@ pub(super) fn update_feed(
 }
 
 pub(super) fn set_feed_auto_translate_titles(
+    workspace: String,
     id: i64,
     enabled: bool,
     reply: oneshot::Sender<Result<(), String>>,
     state: &WorkerState,
 ) {
-    let workspace = state.workspace();
     let database = state.database.clone();
     job(reply, move |_| {
         database.write(workspace, move |store| {
@@ -125,10 +125,10 @@ pub(super) fn set_feed_auto_translate_titles(
 }
 
 pub(super) fn reset_title_translation_cutoffs(
+    workspace: String,
     reply: oneshot::Sender<Result<(), String>>,
     state: &WorkerState,
 ) {
-    let workspace = state.workspace();
     let database = state.database.clone();
     job(reply, move |_| {
         database.write(workspace, |store| {
@@ -138,13 +138,13 @@ pub(super) fn reset_title_translation_cutoffs(
 }
 
 pub(super) fn import_opml(
+    workspace: String,
     content: String,
     reply: oneshot::Sender<Result<usize, String>>,
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
-    let provider = state.provider_kind();
+    let provider = state.provider_kind_for(&workspace);
     let config = provider.and_then(|kind| state.provider_settings(kind));
     let database = state.database.clone();
     let detailed_logging = state.detailed_sync_logging.clone();
@@ -190,7 +190,7 @@ pub(super) fn import_opml(
                             .acquire_owned()
                             .await
                             .map_err(|error| error.to_string())?;
-                        let result = Store::fetch_feed_data(&url, None, None).await;
+                        let result = super::feed_fetch::fetch_feed_data(&url, None, None).await;
                         drop(permit);
                         Ok::<_, String>((url, title, folder, result))
                     });
@@ -230,10 +230,13 @@ pub(super) fn import_opml(
     });
 }
 
-pub(super) fn export_opml(reply: oneshot::Sender<Result<String, String>>, state: &WorkerState) {
+pub(super) fn export_opml(
+    workspace: String,
+    reply: oneshot::Sender<Result<String, String>>,
+    state: &WorkerState,
+) {
     let path = state.path.clone();
-    let workspace = state.workspace();
-    let provider = state.provider_kind();
+    let provider = state.provider_kind_for(&workspace);
     let config = provider.and_then(|kind| state.provider_settings(kind));
     job(reply, move |runtime| {
         if let (Some(kind), Some(config)) = (provider, config) {

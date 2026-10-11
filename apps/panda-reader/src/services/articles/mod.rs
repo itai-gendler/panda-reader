@@ -1,11 +1,13 @@
 pub(super) mod cache;
 mod content;
+mod fetch;
 
 use super::command::{TitleTranslationInput, TitleTranslationOutcome, TitleTranslationStatus};
 use super::database::DbWriter;
 use super::worker::{
     TranslationJobKey, WorkerState, finish_article_work, job, lock_mutex, read_lock,
-    register_article_work, remote_mark_lock, title_job, try_job, wait_for_article_work_cancel,
+    register_article_work, remote_mark_lock, title_job, try_background_job, try_job,
+    wait_for_article_work_cancel,
 };
 use panda_core::{
     ArticleCursor, CanonicalArticle, CanonicalHtml, MarkField, PreparedArticle, RawHtml,
@@ -229,6 +231,7 @@ fn canonical_article_body(
 }
 
 pub(super) fn snapshot(
+    workspace: String,
     scope: Scope,
     search: String,
     limit: i64,
@@ -238,7 +241,6 @@ pub(super) fn snapshot(
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
     job(reply, move |_| {
         let store = Store::open_read_workspace(&path, &workspace).map_err(|e| e.to_string())?;
         store
@@ -248,6 +250,7 @@ pub(super) fn snapshot(
 }
 
 pub(super) fn article(
+    workspace: String,
     id: i64,
     show_translation: bool,
     translation_layout: TranslationLayout,
@@ -257,7 +260,6 @@ pub(super) fn article(
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
     let cache = state.body_cache.clone();
     let plugins = state.plugin_registry.clone();
     let database = state.database.clone();
@@ -280,13 +282,13 @@ pub(super) fn article(
 }
 
 pub(super) fn save_reading_progress(
+    workspace: String,
     id: i64,
     progress: f32,
     reply: oneshot::Sender<Result<(), String>>,
     state: &WorkerState,
 ) {
     let database = state.database.clone();
-    let workspace = state.workspace();
     job(reply, move |_| {
         database.write(workspace, move |store| {
             store.save_reading_progress(id, progress)
@@ -295,14 +297,14 @@ pub(super) fn save_reading_progress(
 }
 
 pub(super) fn mark_all_read(
+    workspace: String,
     scope: Scope,
     search: String,
     reply: oneshot::Sender<Result<usize, String>>,
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
-    let provider = state.provider_kind();
+    let provider = state.provider_kind_for(&workspace);
     let config = provider.and_then(|kind| state.provider_settings(kind));
     let database = state.database.clone();
     job(reply, move |_| {
@@ -317,6 +319,7 @@ pub(super) fn mark_all_read(
 }
 
 pub(super) fn mark(
+    workspace: String,
     id: i64,
     field: MarkField,
     value: bool,
@@ -324,8 +327,7 @@ pub(super) fn mark(
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
-    let provider = state.provider_kind();
+    let provider = state.provider_kind_for(&workspace);
     let config = provider.and_then(|kind| state.provider_settings(kind));
     let database = state.database.clone();
     job(reply, move |_| {
@@ -365,7 +367,7 @@ fn queue_remote_mark_flush(
     let queued_workspace = workspace.clone();
     let job_workspace = workspace.clone();
     let remote_lock = remote_mark_lock(&workspace);
-    let scheduled = try_job(reply, move |runtime| {
+    let scheduled = try_background_job(reply, move |runtime| {
         let result = match ProviderClient::new(kind, &config) {
             Ok(remote) => runtime.block_on(async {
                 let _guard = remote_lock.lock().await;
@@ -447,6 +449,7 @@ async fn flush_remote_marks(
 }
 
 pub(super) fn extract(
+    workspace: String,
     id: i64,
     force: bool,
     extractor: panda_core::ContentExtractor,
@@ -454,7 +457,6 @@ pub(super) fn extract(
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
     let cache = state.body_cache.clone();
     let plugins = state.plugin_registry.clone();
     let database = state.database.clone();
@@ -468,44 +470,60 @@ pub(super) fn extract(
             let plugins = read_lock(&plugins, "plugin registry");
             let pipeline_hash = format!("{}:{extractor:?}", plugins.cache_key());
             let prepared = runtime.block_on(async {
-            tokio::select! {
-                _ = wait_for_article_work_cancel(cancel_receiver) => Err("Article task cancelled".to_owned()),
-                result = store.prepare_extraction_using(
-                id,
-                force,
-                extractor,
-                &pipeline_hash,
-                |url| {
-                    let resolved = plugins.resolve_article_url(url);
-                    for diagnostic in &resolved.diagnostics {
-                        eprintln!(
-                            "article URL resolver {} failed: {}",
-                            diagnostic.plugin_id, diagnostic.message
-                        );
+                tokio::select! {
+                    _ = wait_for_article_work_cancel(cancel_receiver) => {
+                        Err("Article task cancelled".to_owned())
                     }
-                    if let Some(diagnostic) = resolved.diagnostics.first() {
-                        return Err(anyhow::anyhow!(diagnostic.message.clone()));
-                    }
-                    Ok(resolved.url)
-                },
-                |raw, url, title| {
-                    let raw = RawHtml::new(raw.to_owned());
-                    let prepared = plugins.process(raw.as_str(), url, title, PluginStage::Prepare);
-                    for diagnostic in &prepared.diagnostics {
-                        eprintln!(
-                            "article plugin {} failed: {}",
-                            diagnostic.plugin_id, diagnostic.message
-                        );
-                    }
-                    Ok((!prepared.matched_plugins.is_empty())
-                        .then_some((prepared.html.into_owned(), prepared.body_selected)))
-                },
-                ) => result.map_err(|e| e.to_string()),
-            }
-        });
+                    result = async {
+                        let Some(input) = store.extraction_input(id, force)? else {
+                            return Ok(None);
+                        };
+                        let (resolved_url, raw_html) = if let Some(cached) = input.cached_page_html.clone() {
+                            (input.url.clone(), cached)
+                        } else {
+                            let resolved = plugins.resolve_article_url(&input.url);
+                            for diagnostic in &resolved.diagnostics {
+                                eprintln!(
+                                    "article URL resolver {} failed: {}",
+                                    diagnostic.plugin_id, diagnostic.message
+                                );
+                            }
+                            if let Some(diagnostic) = resolved.diagnostics.first() {
+                                anyhow::bail!("{}", diagnostic.message);
+                            }
+                            let referer = (resolved.url != input.url).then_some(input.url.as_str());
+                            let html = fetch::fetch_html(&resolved.url, referer).await?;
+                            (resolved.url, html)
+                        };
+                        store.prepare_extraction_from_page(
+                            input,
+                            resolved_url.clone(),
+                            raw_html.clone(),
+                            extractor,
+                            &pipeline_hash,
+                            |raw, url, title| {
+                                let raw = RawHtml::new(raw.to_owned());
+                                let prepared = plugins.process(raw.as_str(), url, title, PluginStage::Prepare);
+                                for diagnostic in &prepared.diagnostics {
+                                    eprintln!(
+                                        "article plugin {} failed: {}",
+                                        diagnostic.plugin_id, diagnostic.message
+                                    );
+                                }
+                                Ok((!prepared.matched_plugins.is_empty())
+                                    .then_some((prepared.html.into_owned(), prepared.body_selected)))
+                            },
+                        )
+                    } => result.map_err(|error: anyhow::Error| error.to_string()),
+                }
+            });
             let result = match prepared {
                 Ok(Some(prepared)) => database.write(workspace.clone(), move |store| {
-                    store.persist_extraction(prepared).map_err(Into::into)
+                    let persisted = store.persist_extraction(prepared)?;
+                    if !persisted {
+                        eprintln!("discarded stale full-text extraction for article {id}");
+                    }
+                    Ok(())
                 }),
                 Ok(None) => Ok(()),
                 Err(error) => Err(error),
@@ -524,6 +542,7 @@ pub(super) fn extract(
 }
 
 pub(super) fn translate(
+    workspace: String,
     id: i64,
     target_lang: String,
     content_revision: i64,
@@ -536,7 +555,6 @@ pub(super) fn translate(
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
     let translator_path = state.translator_path.clone();
     let cache = state.body_cache.clone();
     let plugins = state.plugin_registry.clone();
@@ -882,11 +900,11 @@ pub(super) fn translate(
 }
 
 pub(super) fn translation_usage(
+    workspace: String,
     reply: oneshot::Sender<Result<Vec<panda_core::TranslationUsage>, String>>,
     state: &WorkerState,
 ) {
     let path = state.path.clone();
-    let workspace = state.workspace();
     job(reply, move |_| {
         Store::open_read_workspace(&path, &workspace)
             .map_err(|e| e.to_string())?
@@ -896,6 +914,7 @@ pub(super) fn translation_usage(
 }
 
 pub(super) fn translate_titles(
+    workspace: String,
     items: Vec<TitleTranslationInput>,
     target_lang: String,
     force: bool,
@@ -908,7 +927,6 @@ pub(super) fn translate_titles(
         .filter(|item| seen_ids.insert(item.id))
         .collect();
     let path = state.path.clone();
-    let workspace = state.workspace();
     let translator_path = state.translator_path.clone();
     let attempted = state.title_translation_attempted.clone();
     let database = state.database.clone();

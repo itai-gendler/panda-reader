@@ -20,8 +20,6 @@ opml.workspace = true
 panda-content = { path = "../panda-content" }
 panda-core = { path = "../panda-core" }
 panda-providers = { path = "../panda-providers" }
-panda-translate = { path = "../panda-translate" }
-reqwest.workspace = true
 rusqlite.workspace = true
 scraper.workspace = true
 sha2.workspace = true
@@ -30,4 +28,6 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+panda-translate = { path = "../panda-translate" }
+reqwest.workspace = true
 tempfile.workspace = true

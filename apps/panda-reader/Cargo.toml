@@ -20,6 +20,8 @@ arboard.workspace = true
 base64 = "=0.22.1"
 chrono.workspace = true
 directories.workspace = true
+encoding_rs.workspace = true
+feed-rs.workspace = true
 futures.workspace = true
 gpui-kit.workspace = true
 image.workspace = true

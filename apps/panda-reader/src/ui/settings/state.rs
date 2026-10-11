@@ -294,6 +294,13 @@ impl Settings {
             window,
             |this, _, event, window, cx| {
                 if let SelectEvent::Confirm(Some(kind)) = event {
+                    if let Some(article_id) = this.reader.requested_article_id.take() {
+                        this.services.cancel_article_work(article_id);
+                    }
+                    if let Some(article_id) = this.reader.translating_article_id.take() {
+                        this.services.cancel_article_work(article_id);
+                    }
+                    this.reader.translation_epoch.next();
                     this.settings.library_source = *kind;
                     this.preferences.library_source = *kind;
                     this.save_preferences();
@@ -327,6 +334,7 @@ impl Settings {
                     this.list.scope = Scope::All;
                     this.reader.request_epoch.next();
                     this.reader.is_extracting = false;
+                    this.reader.translation_incomplete = false;
                     this.reader.article = None;
                     this.reader.body_html = SharedString::default();
                     this.reader.body_markdown = SharedString::default();

@@ -1,6 +1,6 @@
 use super::{command::Command, worker::WorkerState};
 
-pub(super) fn handle(command: Command, state: &WorkerState) {
+pub(super) fn handle(command: Command, workspace: String, state: &WorkerState) {
     match command {
         Command::CommunityPluginCatalog { reply } => {
             super::worker::community_plugin_catalog(reply);
@@ -34,7 +34,16 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             after,
             include_feeds,
             reply,
-        } => super::articles::snapshot(scope, search, limit, after, include_feeds, reply, state),
+        } => super::articles::snapshot(
+            workspace.clone(),
+            scope,
+            search,
+            limit,
+            after,
+            include_feeds,
+            reply,
+            state,
+        ),
         Command::Article {
             id,
             show_translation,
@@ -43,6 +52,7 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             paragraph_indent,
             reply,
         } => super::articles::article(
+            workspace.clone(),
             id,
             show_translation,
             translation_layout,
@@ -55,24 +65,24 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             id,
             progress,
             reply,
-        } => super::articles::save_reading_progress(id, progress, reply, state),
+        } => super::articles::save_reading_progress(workspace.clone(), id, progress, reply, state),
         Command::MarkAllRead {
             scope,
             search,
             reply,
-        } => super::articles::mark_all_read(scope, search, reply, state),
+        } => super::articles::mark_all_read(workspace.clone(), scope, search, reply, state),
         Command::Mark {
             id,
             field,
             value,
             reply,
-        } => super::articles::mark(id, field, value, reply, state),
+        } => super::articles::mark(workspace.clone(), id, field, value, reply, state),
         Command::Extract {
             id,
             force,
             extractor,
             reply,
-        } => super::articles::extract(id, force, extractor, reply, state),
+        } => super::articles::extract(workspace.clone(), id, force, extractor, reply, state),
         Command::Translate {
             id,
             target_lang,
@@ -84,6 +94,7 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             progress,
             reply,
         } => super::articles::translate(
+            workspace.clone(),
             id,
             target_lang,
             content_revision,
@@ -100,10 +111,23 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             target_lang,
             force,
             reply,
-        } => super::articles::translate_titles(items, target_lang, force, reply, state),
-        Command::TranslationUsage { reply } => super::articles::translation_usage(reply, state),
-        Command::AddFeed { url, reply } => super::subscriptions::add_feed(url, reply, state),
-        Command::RemoveFeed { id, reply } => super::subscriptions::remove_feed(id, reply, state),
+        } => super::articles::translate_titles(
+            workspace.clone(),
+            items,
+            target_lang,
+            force,
+            reply,
+            state,
+        ),
+        Command::TranslationUsage { reply } => {
+            super::articles::translation_usage(workspace.clone(), reply, state)
+        }
+        Command::AddFeed { url, reply } => {
+            super::subscriptions::add_feed(workspace.clone(), url, reply, state)
+        }
+        Command::RemoveFeed { id, reply } => {
+            super::subscriptions::remove_feed(workspace.clone(), id, reply, state)
+        }
         Command::UpdateFeed {
             id,
             title,
@@ -112,6 +136,7 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             auto_translate_titles,
             reply,
         } => super::subscriptions::update_feed(
+            workspace.clone(),
             id,
             title,
             folder,
@@ -121,15 +146,23 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             state,
         ),
         Command::SetFeedAutoTranslateTitles { id, enabled, reply } => {
-            super::subscriptions::set_feed_auto_translate_titles(id, enabled, reply, state)
+            super::subscriptions::set_feed_auto_translate_titles(
+                workspace.clone(),
+                id,
+                enabled,
+                reply,
+                state,
+            )
         }
         Command::ResetTitleTranslationCutoffs { reply } => {
-            super::subscriptions::reset_title_translation_cutoffs(reply, state)
+            super::subscriptions::reset_title_translation_cutoffs(workspace.clone(), reply, state)
         }
         Command::ImportOpml { content, reply } => {
-            super::subscriptions::import_opml(content, reply, state)
+            super::subscriptions::import_opml(workspace.clone(), content, reply, state)
         }
-        Command::ExportOpml { reply } => super::subscriptions::export_opml(reply, state),
+        Command::ExportOpml { reply } => {
+            super::subscriptions::export_opml(workspace.clone(), reply, state)
+        }
         Command::Connect {
             kind,
             endpoint,
@@ -138,7 +171,9 @@ pub(super) fn handle(command: Command, state: &WorkerState) {
             reply,
         } => super::connections::connect(kind, endpoint, username, secret, reply, state),
         Command::Disconnect { kind, reply } => super::connections::disconnect(kind, reply, state),
-        Command::RefreshFeed { id, reply } => super::sync::refresh_feed(id, reply, state),
-        Command::Refresh { force, reply } => super::sync::refresh(force, reply, state),
+        Command::RefreshFeed { id, reply } => {
+            super::sync::refresh_feed(workspace.clone(), id, reply, state)
+        }
+        Command::Refresh { force, reply } => super::sync::refresh(workspace, force, reply, state),
     }
 }

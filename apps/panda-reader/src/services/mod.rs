@@ -8,8 +8,10 @@ mod database;
 mod diagnostics;
 mod dispatch;
 pub(crate) mod favicon;
+mod feed_fetch;
 mod subscriptions;
 mod sync;
+mod task_coordinator;
 mod worker;
 
 pub use command::Command;

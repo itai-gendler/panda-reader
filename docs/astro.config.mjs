@@ -51,6 +51,13 @@ export default defineConfig({
             { label: 'Testing plugins', link: '/docs/plugins/testing/' },
           ],
         },
+        {
+          label: 'Development',
+          items: [
+            { label: 'Architecture boundaries', link: '/docs/development/architecture/' },
+            { label: 'GUI smoke test', link: '/docs/development/gui-smoke-test/' },
+          ],
+        },
       ],
     }),
   ],
