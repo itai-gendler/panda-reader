@@ -1,7 +1,8 @@
-# ScienceNet places its page headline in row three of the outer header table.
+# ScienceNet prepends a presentation-only table with a duplicate headline and spacer rows.
+# Remove the whole first table so empty rows do not leave a blank box before the article.
 [[rules]]
 op = "remove"
-selector = "body > div > div > table:first-of-type > tbody > tr:nth-child(3)"
+selector = "body > div > div > table:first-of-type"
 
 # ScienceNet repeats this legal notice in article HTML; inline styles are stripped before cleanup.
 [[rules]]
