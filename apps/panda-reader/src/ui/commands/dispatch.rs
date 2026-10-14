@@ -90,7 +90,7 @@ impl ReaderWindow {
             }
             CommandKind::AddFeed => {
                 self.settings.open = true;
-                self.settings.page = SettingsPage::General;
+                self.settings.select_page(SettingsPage::General);
                 self.settings.theme_picker_open = false;
                 let _ = self
                     .settings
@@ -105,25 +105,25 @@ impl ReaderWindow {
             CommandKind::ToggleSidebar => self.toggle_sidebar(cx),
             CommandKind::OpenSettings => {
                 self.settings.open = true;
-                self.settings.page = SettingsPage::General;
+                self.settings.select_page(SettingsPage::General);
                 self.settings.theme_picker_open = false;
                 cx.notify();
             }
             CommandKind::OpenAppearance => {
                 self.settings.open = true;
-                self.settings.page = SettingsPage::Appearance;
+                self.settings.select_page(SettingsPage::Appearance);
                 self.settings.theme_picker_open = false;
                 cx.notify();
             }
             CommandKind::OpenReading => {
                 self.settings.open = true;
-                self.settings.page = SettingsPage::Reading;
+                self.settings.select_page(SettingsPage::Reading);
                 self.settings.theme_picker_open = false;
                 cx.notify();
             }
             CommandKind::OpenAbout => {
                 self.settings.open = true;
-                self.settings.page = SettingsPage::About;
+                self.settings.select_page(SettingsPage::About);
                 self.settings.theme_picker_open = false;
                 cx.notify();
             }
@@ -135,7 +135,7 @@ impl ReaderWindow {
             }
             CommandKind::ShowKeyboardShortcuts => {
                 self.settings.open = true;
-                self.settings.page = SettingsPage::Reading;
+                self.settings.select_page(SettingsPage::Reading);
                 self.settings.theme_picker_open = false;
                 cx.notify();
             }

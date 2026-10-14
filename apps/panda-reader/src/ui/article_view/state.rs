@@ -44,6 +44,7 @@ pub(in crate::ui) struct ArticleView {
     pub(in crate::ui) translation_spinner_frame: u32,
     pub(in crate::ui) is_extracting: bool,
     pub(in crate::ui) requested_article_id: Option<i64>,
+    pub(in crate::ui) show_loading_skeleton: bool,
 }
 
 impl ArticleView {
@@ -70,6 +71,7 @@ impl ArticleView {
             translation_spinner_frame: 0,
             is_extracting: false,
             requested_article_id: None,
+            show_loading_skeleton: false,
         }
     }
 

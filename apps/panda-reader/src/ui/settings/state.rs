@@ -75,6 +75,11 @@ pub(in crate::ui) struct Settings {
 }
 
 impl Settings {
+    pub(in crate::ui) fn select_page(&mut self, page: SettingsPage) {
+        self.page = page;
+        self.settings_scroll = ScrollHandle::default();
+    }
+
     pub(in crate::ui) fn new(
         window: &mut Window,
         cx: &mut Context<ReaderWindow>,

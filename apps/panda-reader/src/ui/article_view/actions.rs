@@ -37,6 +37,7 @@ impl ReaderWindow {
             let translating_id = reader.translating_article_id.take();
             let previous_id = reader.requested_article_id;
             reader.requested_article_id = Some(id);
+            reader.show_loading_skeleton = false;
             let revision = reader.request_epoch.next();
             reader.progress_epoch = reader.progress_epoch.wrapping_add(1);
             reader.restore_progress = None;
@@ -49,8 +50,22 @@ impl ReaderWindow {
             reader.showing_translation = false;
             reader.body_html = SharedString::default();
             reader.body_markdown = SharedString::default();
+            reader.article = None;
             (translating_id, previous_id, revision)
         });
+        let reader = self.reader.clone();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(120))
+                .await;
+            let _ = reader.update(cx, |reader, cx| {
+                if reader.request_epoch.is_current(revision) && reader.article.is_none() {
+                    reader.show_loading_skeleton = true;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         if let Some(translating_id) = translating_id {
             self.services.cancel_article_work(translating_id);
             self.clear_status();
@@ -115,6 +130,7 @@ impl ReaderWindow {
                             && article.extracted_html.is_none()
                             && article.url.is_some();
                         this.update_article_reader(cx, |reader| {
+                            reader.show_loading_skeleton = false;
                             reader.showing_translation = false;
                             reader.body_html = prepared.body_html.into();
                             reader.body_markdown = prepared.body_markdown.into();
@@ -138,7 +154,13 @@ impl ReaderWindow {
                             this.extract(id, false, cx);
                         }
                     }
-                    Err(error) => this.set_error(error),
+                    Err(error) => {
+                        this.update_article_reader(cx, |reader| {
+                            reader.requested_article_id = None;
+                            reader.show_loading_skeleton = false;
+                        });
+                        this.set_error(error);
+                    }
                 }
                 if needs_status_refresh {
                     this.sync_status_bar(cx);
@@ -154,7 +176,9 @@ impl ReaderWindow {
         {
             return;
         }
-        let epoch = self.update_article_reader(cx, |reader| {
+        // The debounce revision is not visual state. Notifying the reader for
+        // every wheel event rebuilds its rich-text view while the page scrolls.
+        let epoch = self.reader.update(cx, |reader, _| {
             reader.progress_epoch = reader.progress_epoch.wrapping_add(1);
             reader.progress_epoch
         });
@@ -559,7 +583,7 @@ impl ReaderWindow {
                 cx,
             );
             self.settings.open = true;
-            self.settings.page = SettingsPage::Reading;
+            self.settings.select_page(SettingsPage::Reading);
             cx.notify();
             return;
         }

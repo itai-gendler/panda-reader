@@ -412,7 +412,7 @@ pub(in crate::ui) fn handle_pane_menu_event(
         PaneMenuEvent::EditFeed(id) => this.begin_edit_feed(*id, window, cx),
         PaneMenuEvent::RemoveFeed(id) => {
             this.settings.open = true;
-            this.settings.page = SettingsPage::General;
+            this.settings.select_page(SettingsPage::General);
             this.sidebar.update(cx, |sidebar, cx| {
                 sidebar.pending_remove_feed = Some(*id);
                 cx.notify();

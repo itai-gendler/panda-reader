@@ -19,6 +19,47 @@ use panda_core::{MarkField, TranslationLayout};
 use super::state::{ArticleView, ArticleViewEvent};
 
 impl ArticleView {
+    fn render_loading_skeleton(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let color = cx.theme().skeleton;
+        let line = move |width: f32, height: f32| {
+            div()
+                .h(px(height))
+                .w(relative(width))
+                .rounded_sm()
+                .bg(color)
+        };
+
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(
+                h_flex()
+                    .h(px(48.))
+                    .px_5()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(line(0.2, 12.)),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(px(self.preferences.reader_content_width))
+                    .mx_auto()
+                    .px(px(48.))
+                    .pt_8()
+                    .gap_5()
+                    .child(line(0.84, 28.))
+                    .child(line(0.54, 28.))
+                    .child(line(0.32, 12.))
+                    .child(div().h(px(1.)).w_full().bg(cx.theme().border))
+                    .child(v_flex().pt_3().gap_4().children(
+                        [0.94, 1.0, 0.88, 0.97, 0.75, 0.92, 0.58].map(|width| line(width, 14.)),
+                    )),
+            )
+    }
+
     fn render_reader(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let reader_entity = cx.entity().downgrade();
         let menu_emit = super::super::context_menus::pane_menu_emitter(reader_entity.clone());
@@ -406,7 +447,9 @@ impl ArticleView {
                             })
                             .on_scroll_wheel(|_, window, cx| {
                                 // Scroll wins over an in-progress text drag.
-                                gpui_kit::base::TextSelection::clear(window, cx);
+                                if gpui_kit::base::TextSelection::has_selection(window, cx) {
+                                    gpui_kit::base::TextSelection::clear(window, cx);
+                                }
                             })
                             .child(
                                 // Capture-phase guard so we end before the window
@@ -541,6 +584,10 @@ impl ArticleView {
                             ),
                     ),
             );
+        } else if self.requested_article_id.is_some() {
+            if self.show_loading_skeleton {
+                reader = reader.child(self.render_loading_skeleton(cx));
+            }
         } else {
             reader = reader.items_center().justify_center().child(
                 v_flex()

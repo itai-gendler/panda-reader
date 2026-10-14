@@ -29,6 +29,15 @@ impl Settings {
             SettingsPage::Plugins => self.render_plugins_settings(owner, cx).into_any_element(),
             SettingsPage::About => self.render_about_settings(owner, cx).into_any_element(),
         };
+        let scroll_id = match self.page {
+            SettingsPage::General => "settings-scroll-general",
+            SettingsPage::Developer => "settings-scroll-developer",
+            SettingsPage::Appearance => "settings-scroll-appearance",
+            SettingsPage::Reading => "settings-scroll-reading",
+            SettingsPage::Translation => "settings-scroll-translation",
+            SettingsPage::Plugins => "settings-scroll-plugins",
+            SettingsPage::About => "settings-scroll-about",
+        };
         let build_label = if cfg!(debug_assertions) {
             owner.t("Development build").to_owned()
         } else {
@@ -159,15 +168,21 @@ impl Settings {
                     .overflow_hidden()
                     .child(
                         div()
-                            .id("settings-scroll")
+                            .id(scroll_id)
                             .relative()
                             .flex_1()
                             .w_full()
                             .min_h_0()
                             .overflow_y_scroll()
                             .track_scroll(&self.settings_scroll)
+                            // Put the absolute scrollbar before page content so it does not
+                            // extend the scroll bounds and create a blank tail at the bottom.
                             .child(
-                                h_flex().w_full().justify_center().child(
+                                Scrollbar::vertical(&self.settings_scroll)
+                                    .id(format!("{scroll_id}-bar")),
+                            )
+                            .child(
+                                v_flex().w_full().items_center().child(
                                     div()
                                         .w(px(640.))
                                         .max_w_full()
@@ -176,8 +191,7 @@ impl Settings {
                                         .pb_8()
                                         .child(page),
                                 ),
-                            )
-                            .child(Scrollbar::vertical(&self.settings_scroll)),
+                            ),
                     ),
             )
             .when(self.theme_picker_open, |view| {
@@ -213,7 +227,7 @@ impl Settings {
             .child(icon.small())
             .child(div().text_sm().child(owner.t(label)))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.settings.page = page;
+                this.settings.select_page(page);
                 this.settings.theme_picker_open = false;
                 if page == SettingsPage::Plugins {
                     this.settings.refresh_plugin_list(cx);

@@ -189,7 +189,7 @@ impl ReaderWindow {
         let status_events = cx.subscribe(&view.status_view, |this, _, event, cx| match event {
             super::status::StatusBarEvent::OpenAbout => {
                 this.settings.open = true;
-                this.settings.page = SettingsPage::About;
+                this.settings.select_page(SettingsPage::About);
                 cx.notify();
             }
         });
@@ -578,7 +578,7 @@ impl ReaderWindow {
                                 .tooltip(self.t("Add feed"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.settings.open = true;
-                                    this.settings.page = SettingsPage::General;
+                                    this.settings.select_page(SettingsPage::General);
                                     this.settings
                                         .add_input
                                         .read(cx)
@@ -626,7 +626,7 @@ impl ReaderWindow {
                         .tooltip(self.t("Appearance"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.settings.open = true;
-                            this.settings.page = SettingsPage::Appearance;
+                            this.settings.select_page(SettingsPage::Appearance);
                             this.settings.theme_picker_open = true;
                             cx.notify();
                         })),
