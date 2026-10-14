@@ -149,16 +149,21 @@ impl ReaderWindow {
                 .await
                 .unwrap_or_else(|_| Err("Background service stopped".to_string()));
             let _ = this.update(cx, |this, cx| {
-                this.sidebar.pending_remove_feed = None;
+                this.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.pending_remove_feed = None;
+                    cx.notify();
+                });
                 match result {
                     Ok(()) => {
-                        this.reader.request_epoch.next();
-                        this.reader.is_extracting = false;
-                        this.reader.article = None;
-                        this.reader.body_html = SharedString::default();
-                        this.reader.body_markdown = SharedString::default();
-                        this.reader.showing_translation = false;
-                        this.list.scope = Scope::All;
+                        this.update_article_reader(cx, |reader| {
+                            reader.request_epoch.next();
+                            reader.is_extracting = false;
+                            reader.article = None;
+                            reader.body_html = SharedString::default();
+                            reader.body_markdown = SharedString::default();
+                            reader.showing_translation = false;
+                        });
+                        this.update_article_list(cx, |list, _| list.scope = Scope::All);
                         this.set_flash(this.t("Feed removed from provider and locally"), cx);
                         this.load_snapshot(cx);
                     }
@@ -175,12 +180,15 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn refresh_with_force(&mut self, force: bool, cx: &mut Context<Self>) {
-        if self.sidebar.is_refreshing {
+        if self.sidebar.read(cx).is_refreshing {
             return;
         }
         let (reply, response) = oneshot::channel();
         self.services.send(Command::Refresh { force, reply });
-        self.sidebar.is_refreshing = true;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.is_refreshing = true;
+            cx.notify();
+        });
         self.set_busy(self.t("Syncing…"));
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -195,7 +203,11 @@ impl ReaderWindow {
                 }
 
                 let _ = this.update(cx, |this, cx| {
-                    if this.list.articles.is_empty() && !this.list.is_loading {
+                    let should_load = {
+                        let list = this.list.read(cx);
+                        list.articles.is_empty() && !list.is_loading
+                    };
+                    if should_load {
                         this.load_snapshot(cx);
                     }
                 });
@@ -204,7 +216,10 @@ impl ReaderWindow {
                     .await;
             };
             let _ = this.update(cx, |this, cx| {
-                this.sidebar.is_refreshing = false;
+                this.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.is_refreshing = false;
+                    cx.notify();
+                });
                 match result {
                     Ok(count) => {
                         this.record_refresh_success();

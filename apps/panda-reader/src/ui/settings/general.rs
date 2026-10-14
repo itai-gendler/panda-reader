@@ -24,11 +24,11 @@ impl Settings {
         cx: &mut Context<ReaderWindow>,
     ) -> impl IntoElement {
         let selected_provider = self.library_source.provider();
+        let sidebar = owner.sidebar.read(cx);
         let active_provider_settings =
             selected_provider.and_then(|provider| self.provider_settings.get(&provider));
         let feed_query = self.added_feeds_search.trim().to_lowercase();
-        let feed_indices = owner
-            .sidebar
+        let feed_indices = sidebar
             .feeds
             .iter()
             .enumerate()
@@ -51,12 +51,12 @@ impl Settings {
                 .child(owner.t("No feeds found"))
                 .into_any_element()
         } else {
-            let pending_remove = owner.sidebar.pending_remove_feed;
+            let pending_remove = sidebar.pending_remove_feed;
             let item_sizes = Rc::new(
                 feed_indices
                     .iter()
                     .map(|index| {
-                        let feed = &owner.sidebar.feeds[*index];
+                        let feed = &sidebar.feeds[*index];
                         let row_height = if pending_remove == Some(feed.id) {
                             104.
                         } else {
@@ -80,11 +80,13 @@ impl Settings {
                         .map(|row| {
                             let index = feed_indices[row];
                             this.sidebar
+                                .read(cx)
                                 .feeds
                                 .get(index)
+                                .cloned()
                                 .map(|feed| {
                                     this.settings
-                                        .render_added_feed_row(this, feed, index + 1, cx)
+                                        .render_added_feed_row(this, &feed, index + 1, cx)
                                         .into_any_element()
                                 })
                                 .unwrap_or_else(|| div().into_any_element())
@@ -232,7 +234,7 @@ impl Settings {
                     .child(i18n::format(
                         owner.preferences.language,
                         "{} feeds in this source. Additions and removals apply only here.",
-                        owner.sidebar.feeds.len(),
+                        sidebar.feeds.len(),
                     )),
             )
             .child(div().pt_4().child(text_input(&self.add_input)))
@@ -252,7 +254,7 @@ impl Settings {
                             .ghost()
                             .icon(bundled_icon(BundledIcon::Refresh))
                             .label(owner.t("Sync now"))
-                            .loading(owner.sidebar.is_refreshing)
+                            .loading(sidebar.is_refreshing)
                             .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     ),
             )
@@ -404,7 +406,10 @@ impl Settings {
                             .ghost()
                             .label(owner.t("Remove"))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.sidebar.pending_remove_feed = Some(id);
+                                this.sidebar.update(cx, |sidebar, cx| {
+                                    sidebar.pending_remove_feed = Some(id);
+                                    cx.notify();
+                                });
                                 cx.notify();
                             })),
                     ),
@@ -413,7 +418,7 @@ impl Settings {
             .w_full()
             .gap_2()
             .child(row)
-            .when(owner.sidebar.pending_remove_feed == Some(id), |view| {
+            .when(owner.sidebar.read(cx).pending_remove_feed == Some(id), |view| {
                 view.child(
                     h_flex()
                         .w_full()
@@ -437,7 +442,10 @@ impl Settings {
                                 .ghost()
                                 .label(owner.t("Cancel"))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.sidebar.pending_remove_feed = None;
+                                    this.sidebar.update(cx, |sidebar, cx| {
+                                        sidebar.pending_remove_feed = None;
+                                        cx.notify();
+                                    });
                                     cx.notify();
                                 })),
                         ),

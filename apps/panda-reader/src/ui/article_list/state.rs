@@ -1,9 +1,9 @@
+use crate::ui::context_menus::PaneMenuEvent;
 use crate::ui::i18n;
-use crate::ui::window::ReaderWindow;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 use panda_core::{ArticleSummary, Scope};
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 pub(in crate::ui) struct ArticleList {
     _subscriptions: Vec<Subscription>,
@@ -18,12 +18,27 @@ pub(in crate::ui) struct ArticleList {
     pub(in crate::ui) is_loading: bool,
     pub(in crate::ui) is_loading_more: bool,
     pub(in crate::ui) pending_navigation: Option<(isize, bool, usize)>,
+    pub(in crate::ui) language: crate::app::preferences::Language,
+    pub(in crate::ui) target_language: String,
+    pub(in crate::ui) selected_article: Option<i64>,
+    pub(in crate::ui) feed_titles: HashMap<i64, String>,
 }
+
+#[derive(Clone, Debug)]
+pub(in crate::ui) enum ArticleListEvent {
+    SearchChanged,
+    SelectArticle(i64),
+    MarkAllRead,
+    LoadMoreArticles,
+}
+
+impl EventEmitter<ArticleListEvent> for ArticleList {}
+impl EventEmitter<PaneMenuEvent> for ArticleList {}
 
 impl ArticleList {
     pub(in crate::ui) fn new(
         window: &mut Window,
-        cx: &mut Context<ReaderWindow>,
+        cx: &mut Context<Self>,
         language: crate::app::preferences::Language,
     ) -> Self {
         let search_placeholder = i18n::text(language, "Search title, author and body");
@@ -33,21 +48,9 @@ impl ArticleList {
             vec![
                 cx.subscribe_in(&search_input, window, move |this, _, event, _, cx| {
                     if matches!(event, InputEvent::Change) {
-                        this.list.search = search_for_events.read(cx).value().to_string();
-                        this.list.search_revision = this.list.search_revision.wrapping_add(1);
-                        let revision = this.list.search_revision;
-                        cx.spawn(async move |this, cx| {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(200))
-                                .await;
-                            let _ = this.update(cx, |this, cx| {
-                                if revision != this.list.search_revision {
-                                    return;
-                                }
-                                this.load_snapshot(cx);
-                            });
-                        })
-                        .detach();
+                        this.search = search_for_events.read(cx).value().to_string();
+                        this.search_revision = this.search_revision.wrapping_add(1);
+                        cx.emit(ArticleListEvent::SearchChanged);
                     }
                 }),
             ];
@@ -63,6 +66,10 @@ impl ArticleList {
             is_loading: true,
             is_loading_more: false,
             pending_navigation: None,
+            language,
+            target_language: "en".to_owned(),
+            selected_article: None,
+            feed_titles: HashMap::new(),
             _subscriptions,
         }
     }

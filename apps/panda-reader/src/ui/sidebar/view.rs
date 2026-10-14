@@ -2,7 +2,6 @@ use crate::app::preferences::LibrarySource;
 use crate::services::favicon::{feed_host, local_favicon_path};
 use crate::ui::components::letter_avatar;
 use crate::ui::components::{BundledIcon, bundled_icon, preview_text, sidebar_font};
-use crate::ui::window::ReaderWindow;
 use gpui_kit::base::{StyledExt as _, v_virtual_list};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
@@ -17,7 +16,7 @@ use gpui_kit::*;
 use panda_core::{Feed, Scope};
 use std::rc::Rc;
 
-use super::state::Sidebar;
+use super::state::{Sidebar, SidebarEvent};
 
 enum SidebarRow {
     Feed {
@@ -71,18 +70,20 @@ impl Render for FolderDragPreview {
 
 impl Sidebar {
     pub(in crate::ui) fn render_feed_row(
-        &self,
-        owner: &ReaderWindow,
+        icons_dir: &std::path::Path,
+        event_entity: WeakEntity<Sidebar>,
+        emit: crate::ui::context_menus::PaneMenuEmitter,
+        language: crate::app::preferences::Language,
+        local: bool,
         feed: &Feed,
         nested: bool,
         selected_scope: &Scope,
-        cx: &mut Context<ReaderWindow>,
+        cx: &mut Context<Sidebar>,
     ) -> impl IntoElement {
         let id = feed.id;
         let is_selected = selected_scope == &Scope::Feed(id);
-        let menu_app = cx.entity().downgrade();
-        let language = owner.preferences.language;
-        let local = owner.settings.library_source == LibrarySource::Local;
+        let menu_emit = emit;
+        let event_for_feed = event_entity.clone();
         let menu_feed = feed.clone();
         let sidebar_bg = cx.theme().sidebar;
         let active_bg = cx.theme().sidebar_accent;
@@ -136,7 +137,7 @@ impl Sidebar {
                             }
                         };
                         match feed_host(feed.site_url.as_deref(), &feed.feed_url)
-                            .and_then(|host| local_favicon_path(&self.icons_dir, &host))
+                            .and_then(|host| local_favicon_path(icons_dir, &host))
                         {
                             Some(path) => {
                                 let loading_avatar = avatar.clone();
@@ -191,40 +192,46 @@ impl Sidebar {
                     .when(feed.unread > 0, |row| {
                         row.child(div().text_xs().child(feed.unread.to_string()))
                     })
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.select_scope(Scope::Feed(id), cx)),
-                    )
+                    .on_click(move |_, _, cx| {
+                        let _ = event_for_feed.update(cx, |_, cx| {
+                            cx.emit(SidebarEvent::SelectScope(Scope::Feed(id)));
+                        });
+                    })
                     .context_menu(move |menu, _, _| {
-                        ReaderWindow::feed_context_menu(
-                            menu, &menu_feed, &menu_app, language, local,
+                        crate::ui::context_menus::feed_context_menu(
+                            menu, &menu_feed, &menu_emit, language, local,
                         )
                     }),
             )
     }
 
     pub(in crate::ui) fn render_folder_row(
-        &self,
-        owner: &ReaderWindow,
+        event_entity: WeakEntity<Sidebar>,
+        emit: crate::ui::context_menus::PaneMenuEmitter,
         folder: &str,
         unread: i64,
         folder_collapsed: bool,
-        cx: &mut Context<ReaderWindow>,
+        selected: bool,
+        selected_icon: &str,
+        language: crate::app::preferences::Language,
+        cx: &mut Context<Sidebar>,
     ) -> impl IntoElement {
-        let selected = matches!(&owner.list.scope, Scope::Folder(name) if name == folder);
         let folder_for_scope = folder.to_owned();
         let folder_for_toggle = folder.to_owned();
         let folder_for_drop = folder.to_owned();
         let folder_for_menu = folder.to_owned();
-        let selected_icon = owner.folder_icon_key(folder).to_owned();
-        let folder_icon = ReaderWindow::folder_icon_element(owner.folder_icon_key(folder));
+        let selected_icon = selected_icon.to_owned();
+        let folder_icon = crate::ui::context_menus::folder_icon_element(&selected_icon);
         let folder_key = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             folder.hash(&mut hasher);
             hasher.finish()
         };
-        let menu_app = cx.entity().downgrade();
-        let language = owner.preferences.language;
+        let event_for_folder = event_entity.clone();
+        let emit_for_drop = emit.clone();
+        let emit_for_toggle = emit.clone();
+        let menu_emit = emit;
         h_flex()
             .id(("folder-row", folder_key))
             .w_full()
@@ -249,16 +256,22 @@ impl Sidebar {
                 })
             })
             .can_drop(|drag, _, _| drag.is::<FolderDrag>())
-            .on_drop(cx.listener(move |this, drag: &FolderDrag, _, cx| {
-                this.reorder_folder_before(&drag.0, &folder_for_drop, cx);
-            }))
+            .on_drop(move |drag: &FolderDrag, _, cx| {
+                emit_for_drop(
+                    crate::ui::context_menus::PaneMenuEvent::ReorderFolderBefore {
+                        dragged: drag.0.clone(),
+                        target: folder_for_drop.clone(),
+                    },
+                    cx,
+                );
+            })
             .context_menu(move |menu, window, cx| {
-                ReaderWindow::folder_context_menu(
+                crate::ui::context_menus::folder_context_menu(
                     menu,
                     window,
                     cx,
                     &folder_for_menu,
-                    &menu_app,
+                    &menu_emit,
                     language,
                     &selected_icon,
                 )
@@ -280,9 +293,14 @@ impl Sidebar {
                         })
                         .small(),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_folder_collapsed(&folder_for_toggle, cx)
-                    })),
+                    .on_click(move |_, _, cx| {
+                        emit_for_toggle(
+                            crate::ui::context_menus::PaneMenuEvent::ToggleFolderCollapsed(
+                                folder_for_toggle.clone(),
+                            ),
+                            cx,
+                        );
+                    }),
             )
             .child(
                 h_flex()
@@ -305,29 +323,34 @@ impl Sidebar {
                     .when(unread > 0, |row| {
                         row.child(div().text_xs().child(unread.to_string()))
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_scope(Scope::Folder(folder_for_scope.clone()), cx)
-                    })),
+                    .on_click(move |_, _, cx| {
+                        let folder = folder_for_scope.clone();
+                        let _ = event_for_folder.update(cx, |_, cx| {
+                            cx.emit(SidebarEvent::SelectScope(Scope::Folder(folder)));
+                        });
+                    }),
             )
     }
 
-    pub(in crate::ui) fn render_sidebar(
-        &self,
-        owner: &ReaderWindow,
-        cx: &mut Context<ReaderWindow>,
-    ) -> impl IntoElement {
+    pub(in crate::ui) fn render_sidebar(&mut self, cx: &mut Context<Sidebar>) -> impl IntoElement {
+        let all_feeds = &self.feeds;
+        let scroll = self.scroll.clone();
+        let is_refreshing = self.is_refreshing;
+        let language = self.language;
+        let selected_scope = self.selected_scope.clone();
+        let folder_icons = self.folder_icons.clone();
         let sidebar_bg = cx.theme().sidebar;
         let sidebar_text = cx.theme().sidebar_foreground;
         let mut folders: std::collections::HashMap<String, Vec<usize>> =
             std::collections::HashMap::new();
-        for (index, feed) in self.feeds.iter().enumerate() {
+        for (index, feed) in all_feeds.iter().enumerate() {
             folders
                 .entry(feed.folder.clone().unwrap_or_default())
                 .or_default()
                 .push(index);
         }
         for feeds in folders.values_mut() {
-            feeds.sort_by_cached_key(|index| self.feeds[*index].title.to_lowercase());
+            feeds.sort_by_cached_key(|index| all_feeds[*index].title.to_lowercase());
         }
         let mut folder_names = folders
             .keys()
@@ -335,8 +358,7 @@ impl Sidebar {
             .cloned()
             .collect::<Vec<_>>();
         folder_names.sort_by_key(|name| name.to_lowercase());
-        let mut folder_order = owner
-            .preferences
+        let mut folder_order = self
             .folder_order
             .iter()
             .filter(|name| folder_names.iter().any(|folder| folder == *name))
@@ -348,24 +370,20 @@ impl Sidebar {
             }
         }
 
-        let mut rows = Vec::with_capacity(self.feeds.len() + folder_order.len());
+        let mut rows = Vec::with_capacity(all_feeds.len() + folder_order.len());
         if let Some(root_feeds) = folders.remove("") {
             rows.extend(root_feeds.into_iter().map(|feed_index| SidebarRow::Feed {
                 feed_index,
                 nested: false,
-                has_error: self.feeds[feed_index].last_error.is_some(),
+                has_error: all_feeds[feed_index].last_error.is_some(),
             }));
         }
         for folder in folder_order {
             let Some(feeds) = folders.remove(&folder) else {
                 continue;
             };
-            let collapsed = owner
-                .preferences
-                .collapsed_folders
-                .iter()
-                .any(|name| name == &folder);
-            let unread = feeds.iter().map(|index| self.feeds[*index].unread).sum();
+            let collapsed = self.collapsed_folders.iter().any(|name| name == &folder);
+            let unread = feeds.iter().map(|index| all_feeds[*index].unread).sum();
             rows.push(SidebarRow::Folder {
                 name: folder,
                 unread,
@@ -375,7 +393,7 @@ impl Sidebar {
                 rows.extend(feeds.into_iter().map(|feed_index| SidebarRow::Feed {
                     feed_index,
                     nested: true,
-                    has_error: self.feeds[feed_index].last_error.is_some(),
+                    has_error: all_feeds[feed_index].last_error.is_some(),
                 }));
             }
         }
@@ -385,7 +403,10 @@ impl Sidebar {
                 .collect::<Vec<_>>(),
         );
         let rows = Rc::new(rows);
-        let scroll = self.scroll.clone();
+        let scroll = scroll.clone();
+        let event_entity = cx.entity().downgrade();
+        let list_event_entity = event_entity.clone();
+        let list_menu_emit = crate::ui::context_menus::pane_menu_emitter(event_entity.clone());
         let list_owner = cx.entity().clone();
         let feed_list = v_virtual_list(
             list_owner,
@@ -396,24 +417,42 @@ impl Sidebar {
                     .map(|index| match &rows[index] {
                         SidebarRow::Feed {
                             feed_index, nested, ..
-                        } => this
-                            .sidebar
-                            .feeds
-                            .get(*feed_index)
-                            .map(|feed| {
-                                this.sidebar
-                                    .render_feed_row(this, feed, *nested, &this.list.scope, cx)
-                                    .into_any_element()
+                        } => {
+                            let feed = this.feeds.get(*feed_index).cloned();
+                            let icons_dir = this.icons_dir.clone();
+                            let selected_scope = this.selected_scope.clone();
+                            feed.map(|feed| {
+                                Sidebar::render_feed_row(
+                                    &icons_dir,
+                                    list_event_entity.clone(),
+                                    list_menu_emit.clone(),
+                                    this.language,
+                                    this.library_source == LibrarySource::Local,
+                                    &feed,
+                                    *nested,
+                                    &selected_scope,
+                                    cx,
+                                )
+                                .into_any_element()
                             })
-                            .unwrap_or_else(|| div().into_any_element()),
+                            .unwrap_or_else(|| div().into_any_element())
+                        }
                         SidebarRow::Folder {
                             name,
                             unread,
                             collapsed,
-                        } => this
-                            .sidebar
-                            .render_folder_row(this, name, *unread, *collapsed, cx)
-                            .into_any_element(),
+                        } => Sidebar::render_folder_row(
+                            list_event_entity.clone(),
+                            list_menu_emit.clone(),
+                            name,
+                            *unread,
+                            *collapsed,
+                            matches!(&this.selected_scope, Scope::Folder(selected) if selected == name),
+                            folder_icons.get(name).map(String::as_str).unwrap_or("folder"),
+                            this.language,
+                            cx,
+                        )
+                        .into_any_element(),
                     })
                     .collect::<Vec<_>>()
             },
@@ -433,32 +472,40 @@ impl Sidebar {
                 v_flex()
                     .gap_0p5()
                     .px_2()
-                    .child(self.scope_row(
-                        owner,
+                    .child(Sidebar::scope_row(
+                        language,
+                        &selected_scope,
+                        event_entity.clone(),
                         "scope-all",
                         "All Articles",
                         IconName::BookOpen,
                         Scope::All,
                         cx,
                     ))
-                    .child(self.scope_row(
-                        owner,
+                    .child(Sidebar::scope_row(
+                        language,
+                        &selected_scope,
+                        event_entity.clone(),
                         "scope-unread",
                         "Unread",
                         IconName::Inbox,
                         Scope::Unread,
                         cx,
                     ))
-                    .child(self.scope_row(
-                        owner,
+                    .child(Sidebar::scope_row(
+                        language,
+                        &selected_scope,
+                        event_entity.clone(),
                         "scope-starred",
                         "Starred",
                         IconName::Star,
                         Scope::Starred,
                         cx,
                     ))
-                    .child(self.scope_row(
-                        owner,
+                    .child(Sidebar::scope_row(
+                        language,
+                        &selected_scope,
+                        event_entity.clone(),
                         "scope-later",
                         "Read Later",
                         IconName::Inbox,
@@ -475,21 +522,23 @@ impl Sidebar {
                     .pb_1()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(owner.t("Feeds"))
+                    .child(crate::ui::i18n::text(language, "Feeds"))
                     .child(
                         Button::new("refresh")
                             .small()
                             .ghost()
                             .icon(bundled_icon(BundledIcon::Refresh))
-                            .tooltip(owner.t("Refresh feeds (Shift-click to force refresh)"))
-                            .loading(self.is_refreshing)
-                            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                                if event.modifiers().shift {
-                                    this.refresh_with_force(true, cx);
-                                } else {
-                                    this.refresh(cx);
-                                }
-                            })),
+                            .tooltip(crate::ui::i18n::text(
+                                language,
+                                "Refresh feeds (Shift-click to force refresh)",
+                            ))
+                            .loading(is_refreshing)
+                            .on_click(move |event: &ClickEvent, _, cx| {
+                                let force = event.modifiers().shift;
+                                let _ = event_entity.update(cx, |_, cx| {
+                                    cx.emit(SidebarEvent::Refresh { force });
+                                });
+                            }),
                     ),
             )
             .child(
@@ -506,15 +555,16 @@ impl Sidebar {
     }
 
     pub(in crate::ui) fn scope_row(
-        &self,
-        owner: &ReaderWindow,
+        language: crate::app::preferences::Language,
+        selected_scope: &Scope,
+        event_entity: WeakEntity<Sidebar>,
         id: &'static str,
         label: &'static str,
         icon: IconName,
         scope: Scope,
-        cx: &mut Context<ReaderWindow>,
+        cx: &mut Context<Sidebar>,
     ) -> impl IntoElement {
-        let selected = owner.list.scope == scope;
+        let selected = selected_scope == &scope;
         let scope_for_click = scope.clone();
         h_flex()
             .id(id)
@@ -543,9 +593,23 @@ impl Sidebar {
                 Scope::Folder(_) => Icon::new(IconName::FolderClosed).small(),
                 _ => Icon::new(icon).small(),
             })
-            .child(div().flex_1().text_sm().child(owner.t(label)))
-            .on_click(
-                cx.listener(move |this, _, _, cx| this.select_scope(scope_for_click.clone(), cx)),
+            .child(
+                div()
+                    .flex_1()
+                    .text_sm()
+                    .child(crate::ui::i18n::text(language, label)),
             )
+            .on_click(move |_, _, cx| {
+                let scope = scope_for_click.clone();
+                let _ = event_entity.update(cx, |_, cx| {
+                    cx.emit(SidebarEvent::SelectScope(scope));
+                });
+            })
+    }
+}
+
+impl Render for Sidebar {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_sidebar(cx)
     }
 }

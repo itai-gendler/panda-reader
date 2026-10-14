@@ -1,12 +1,15 @@
 use crate::services::favicon::{feed_host, fetch_favicon, local_favicon_path};
-use crate::ui::components::{BundledIcon, bundled_icon};
 use crate::ui::window::ReaderWindow;
-use gpui_kit::component::{Icon, IconName, Sizable as _};
 use gpui_kit::*;
 
 impl ReaderWindow {
-    pub(in crate::ui) fn unread_total(&self) -> i64 {
-        self.sidebar.feeds.iter().map(|feed| feed.unread).sum()
+    pub(in crate::ui) fn unread_total(&self, cx: &App) -> i64 {
+        self.sidebar
+            .read(cx)
+            .feeds
+            .iter()
+            .map(|feed| feed.unread)
+            .sum()
     }
 
     pub(in crate::ui) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -49,9 +52,10 @@ impl ReaderWindow {
         }
     }
 
-    pub(in crate::ui) fn sync_folder_order_from_feeds(&mut self) {
+    pub(in crate::ui) fn sync_folder_order_from_feeds(&mut self, cx: &App) {
         let mut names = self
             .sidebar
+            .read(cx)
             .feeds
             .iter()
             .filter_map(|feed| feed.folder.clone())
@@ -71,7 +75,7 @@ impl ReaderWindow {
         if dragged == target || dragged.is_empty() || target.is_empty() {
             return;
         }
-        self.sync_folder_order_from_feeds();
+        self.sync_folder_order_from_feeds(cx);
         let order = &mut self.preferences.folder_order;
         let Some(from) = order.iter().position(|name| name == dragged) else {
             return;
@@ -120,44 +124,36 @@ impl ReaderWindow {
         cx.notify();
     }
 
-    pub(in crate::ui) fn folder_icon_element(icon_key: &str) -> Icon {
-        match icon_key {
-            "star" => bundled_icon(BundledIcon::Star).small(),
-            "book" => Icon::new(IconName::BookOpen).small(),
-            "globe" => Icon::new(IconName::Globe).small(),
-            "bookmark" => bundled_icon(BundledIcon::Bookmark).small(),
-            _ => bundled_icon(BundledIcon::Folder).small(),
-        }
-    }
-
-    pub(in crate::ui) fn folder_icon_key(&self, folder: &str) -> &str {
-        self.preferences
-            .folder_icons
-            .get(folder)
-            .map(String::as_str)
-            .unwrap_or("folder")
-    }
-
     pub(in crate::ui) fn ensure_favicons(&mut self, cx: &mut Context<Self>) {
-        for feed in &self.sidebar.feeds {
+        let (feeds, icons_dir) = {
+            let sidebar = self.sidebar.read(cx);
+            (sidebar.feeds.clone(), sidebar.icons_dir.clone())
+        };
+        for feed in &feeds {
             let Some(host) = feed_host(feed.site_url.as_deref(), &feed.feed_url) else {
                 continue;
             };
-            if local_favicon_path(&self.sidebar.icons_dir, &host).is_some() {
+            // `.invalid` is reserved for examples and fixtures; never spend a request on it.
+            if host == "invalid" || host.ends_with(".invalid") {
                 continue;
             }
-            if !self.sidebar.favicon_requested.insert(host.clone()) {
+            if local_favicon_path(&icons_dir, &host).is_some() {
+                continue;
+            }
+            if !self.sidebar.update(cx, |sidebar, _| {
+                sidebar.favicon_requested.insert(host.clone())
+            }) {
                 continue;
             }
             let site_url = feed
                 .site_url
                 .clone()
                 .unwrap_or_else(|| feed.feed_url.clone());
-            let icons_dir = self.sidebar.icons_dir.clone();
+            let icon_dir = icons_dir.clone();
             let weak = cx.entity().downgrade();
             let http_client = cx.http_client();
             cx.spawn(async move |_, cx| {
-                let result = fetch_favicon(http_client, &host, &site_url, &icons_dir).await;
+                let result = fetch_favicon(http_client, &host, &site_url, &icon_dir).await;
                 if let Err(error) = result {
                     eprintln!("could not fetch feed icon for {host}: {error}");
                 }

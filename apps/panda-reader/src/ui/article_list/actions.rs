@@ -9,18 +9,32 @@ const ARTICLE_PAGE: i64 = 20;
 
 impl ReaderWindow {
     pub(in crate::ui) fn select_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
-        if let Some(article_id) = self.reader.requested_article_id.take() {
+        let article_id = self.update_article_reader(cx, |reader| {
+            let article_id = reader.requested_article_id.take();
+            reader.request_epoch.next();
+            reader.is_extracting = false;
+            reader.article = None;
+            reader.body_html = SharedString::default();
+            reader.body_markdown = SharedString::default();
+            reader.showing_translation = false;
+            article_id
+        });
+        if let Some(article_id) = article_id {
             self.services.cancel_article_work(article_id);
         }
-        self.reader.request_epoch.next();
-        self.reader.is_extracting = false;
-        self.list.scope = scope;
-        self.reader.article = None;
-        self.reader.body_html = SharedString::default();
-        self.reader.body_markdown = SharedString::default();
-        self.reader.showing_translation = false;
-        self.list.articles = Arc::new(Vec::new());
-        self.list.has_more = false;
+        self.update_article_list(cx, |list, _| {
+            list.scope = scope.clone();
+            list.selected_article = None;
+        });
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.selected_scope = scope;
+            cx.notify();
+        });
+        self.update_article_list(cx, |list, _| {
+            list.articles = Arc::new(Vec::new());
+            list.has_more = false;
+        });
+        self.sync_status_bar(cx);
         self.load_snapshot(cx);
     }
 
@@ -29,85 +43,122 @@ impl ReaderWindow {
         scope: Scope,
         cx: &mut Context<Self>,
     ) {
-        self.list.scope = scope;
-        self.list.articles = Arc::new(Vec::new());
-        self.list.has_more = false;
+        self.update_article_list(cx, |list, _| {
+            list.scope = scope.clone();
+            list.articles = Arc::new(Vec::new());
+            list.has_more = false;
+        });
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.selected_scope = scope;
+            cx.notify();
+        });
+        self.sync_status_bar(cx);
         self.load_snapshot(cx);
     }
 
     pub(in crate::ui) fn load_snapshot(&mut self, cx: &mut Context<Self>) {
-        self.list.pending_navigation = None;
-        self.list.is_loading_more = false;
+        self.update_article_list(cx, |list, _| {
+            list.pending_navigation = None;
+            list.is_loading_more = false;
+        });
         self.load_snapshot_page(false, cx);
     }
 
     pub(in crate::ui) fn load_snapshot_page(&mut self, append: bool, cx: &mut Context<Self>) {
-        if !append {
-            self.list.pending_navigation = None;
-        }
-        self.list.snapshot_revision = self.list.snapshot_revision.wrapping_add(1);
-        let revision = self.list.snapshot_revision;
-        let after = if append {
-            self.list.articles.last().map(ArticleCursor::from_summary)
-        } else {
-            None
-        };
+        let (revision, after, scope, search, is_empty) = self.update_article_list(cx, |list, _| {
+            if !append {
+                list.pending_navigation = None;
+            }
+            list.snapshot_revision = list.snapshot_revision.wrapping_add(1);
+            let revision = list.snapshot_revision;
+            let after = if append {
+                list.articles.last().map(ArticleCursor::from_summary)
+            } else {
+                None
+            };
+            (
+                revision,
+                after,
+                list.scope.clone(),
+                list.search.clone(),
+                list.articles.is_empty(),
+            )
+        });
         let (reply, response) = oneshot::channel();
         self.services.send(Command::Snapshot {
-            scope: self.list.scope.clone(),
-            search: self.list.search.clone(),
+            scope,
+            search,
             limit: ARTICLE_PAGE,
             after,
             include_feeds: !append,
             reply,
         });
         if !append {
-            self.list.is_loading = self.list.articles.is_empty();
+            self.update_article_list(cx, |list, _| list.is_loading = is_empty);
         }
         cx.spawn(async move |this, cx| {
             let result = response
                 .await
                 .unwrap_or_else(|_| Err("Background service stopped".to_string()));
             let _ = this.update(cx, |this, cx| {
-                if revision != this.list.snapshot_revision {
+                if revision != this.list.read(cx).snapshot_revision {
                     return;
                 }
-                this.list.is_loading = false;
-                this.list.is_loading_more = false;
+                this.update_article_list(cx, |list, _| {
+                    list.is_loading = false;
+                    list.is_loading_more = false;
+                });
                 let mut continue_navigation = None;
                 match result {
                     Ok(snapshot) => {
                         let newly_loaded = snapshot.articles.clone();
                         if !append {
-                            this.sidebar.feeds = snapshot.feeds;
-                            this.sync_folder_order_from_feeds();
-                            this.ensure_favicons(cx);
-                            this.list.articles = Arc::new(snapshot.articles);
-                        } else if !snapshot.articles.is_empty() {
-                            let articles = Arc::make_mut(&mut this.list.articles);
-                            articles.extend(snapshot.articles);
-                        }
-                        this.list.has_more = snapshot.has_more;
-                        if append
-                            && let Some((delta, unread_only, previous_len)) =
-                                this.list.pending_navigation
-                        {
-                            if this.list.articles.len() > previous_len {
-                                this.list.pending_navigation = None;
-                                continue_navigation = Some((delta, unread_only));
-                            } else {
-                                this.list.pending_navigation = None;
-                            }
-                        }
-                        if let Some(article) = &mut this.reader.article {
-                            article.summary = this
-                                .list
-                                .articles
+                            let feed_titles = snapshot
+                                .feeds
                                 .iter()
-                                .find(|row| row.id == article.summary.id)
-                                .cloned()
-                                .unwrap_or_else(|| article.summary.clone());
+                                .map(|feed| (feed.id, feed.title.clone()))
+                                .collect();
+                            this.sidebar.update(cx, |sidebar, cx| {
+                                sidebar.feeds = snapshot.feeds;
+                                cx.notify();
+                            });
+                            this.update_article_list(cx, |list, _| {
+                                list.feed_titles = feed_titles;
+                            });
+                            this.sync_folder_order_from_feeds(cx);
+                            this.ensure_favicons(cx);
+                            this.update_article_list(cx, |list, _| {
+                                list.articles = Arc::new(snapshot.articles);
+                            });
+                        } else if !snapshot.articles.is_empty() {
+                            this.update_article_list(cx, |list, _| {
+                                Arc::make_mut(&mut list.articles).extend(snapshot.articles);
+                            });
                         }
+                        let articles = this.update_article_list(cx, |list, _| {
+                            list.has_more = snapshot.has_more;
+                            if append
+                                && let Some((delta, unread_only, previous_len)) =
+                                    list.pending_navigation
+                            {
+                                if list.articles.len() > previous_len {
+                                    list.pending_navigation = None;
+                                    continue_navigation = Some((delta, unread_only));
+                                } else {
+                                    list.pending_navigation = None;
+                                }
+                            }
+                            list.articles.clone()
+                        });
+                        this.update_article_reader(cx, |reader| {
+                            if let Some(article) = &mut reader.article {
+                                article.summary = articles
+                                    .iter()
+                                    .find(|row| row.id == article.summary.id)
+                                    .cloned()
+                                    .unwrap_or_else(|| article.summary.clone());
+                            }
+                        });
                         this.queue_title_translations(&newly_loaded, cx);
                         if !append && this.startup_sync_pending {
                             this.startup_sync_pending = false;
@@ -115,7 +166,9 @@ impl ReaderWindow {
                         }
                     }
                     Err(error) => {
-                        this.list.pending_navigation = None;
+                        this.update_article_list(cx, |list, _| {
+                            list.pending_navigation = None;
+                        });
                         this.set_error(error)
                     }
                 }
@@ -166,50 +219,52 @@ impl ReaderWindow {
             let result = response
                 .await
                 .unwrap_or_else(|_| Err("Background service stopped".into()));
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(outcome) => {
-                    this.title_translation_usage = outcome.usage;
-                    let status = outcome.status.clone();
-                    if this.preferences.auto_translate_titles
-                        && this.preferences.translation_language.translator_code() == target
-                    {
-                        for (id, original, translated, lang) in outcome.translated {
-                            if let Some(row) = Arc::make_mut(&mut this.list.articles)
-                                .iter_mut()
-                                .find(|r| r.id == id && r.title == original)
-                            {
-                                row.auto_translated_title = Some(translated.clone());
-                                row.auto_translated_title_lang = Some(lang.clone());
-                                row.auto_translated_title_source_hash =
-                                    Some(panda_translate::title_source_hash(&original));
-                            }
-                            if let Some(article) = this
-                                .reader
-                                .article
-                                .as_mut()
-                                .filter(|a| a.summary.id == id && a.summary.title == original)
-                            {
-                                article.summary.auto_translated_title = Some(translated);
-                                article.summary.auto_translated_title_lang = Some(lang);
-                                article.summary.auto_translated_title_source_hash =
-                                    Some(panda_translate::title_source_hash(&original));
-                            }
-                        }
-                    }
-                    if let Some(status) = status {
-                        match status {
-                            crate::services::TitleTranslationStatus::Info(message) => {
-                                this.set_flash(message, cx);
-                            }
-                            crate::services::TitleTranslationStatus::Error(message) => {
-                                this.set_error(message);
+            let _ =
+                this.update(cx, |this, cx| match result {
+                    Ok(outcome) => {
+                        this.title_translation_usage = outcome.usage;
+                        let status = outcome.status.clone();
+                        if this.preferences.auto_translate_titles
+                            && this.preferences.translation_language.translator_code() == target
+                        {
+                            for (id, original, translated, lang) in outcome.translated {
+                                this.update_article_list(cx, |list, _| {
+                                    if let Some(row) = Arc::make_mut(&mut list.articles)
+                                        .iter_mut()
+                                        .find(|r| r.id == id && r.title == original)
+                                    {
+                                        row.auto_translated_title = Some(translated.clone());
+                                        row.auto_translated_title_lang = Some(lang.clone());
+                                        row.auto_translated_title_source_hash =
+                                            Some(panda_translate::title_source_hash(&original));
+                                    }
+                                });
+                                this.update_article_reader(cx, |reader| {
+                                    if let Some(article) = reader.article.as_mut().filter(|a| {
+                                        a.summary.id == id && a.summary.title == original
+                                    }) {
+                                        article.summary.auto_translated_title = Some(translated);
+                                        article.summary.auto_translated_title_lang = Some(lang);
+                                        article.summary.auto_translated_title_source_hash =
+                                            Some(panda_translate::title_source_hash(&original));
+                                    }
+                                });
                             }
                         }
+                        if let Some(status) = status {
+                            match status {
+                                crate::services::TitleTranslationStatus::Info(message) => {
+                                    this.set_flash(message, cx);
+                                }
+                                crate::services::TitleTranslationStatus::Error(message) => {
+                                    this.set_error(message);
+                                }
+                            }
+                        }
+                        cx.notify();
                     }
-                    cx.notify();
-                }
-                Err(error) => this.set_error(format!("Title translation failed: {error}")),
-            });
+                    Err(error) => this.set_error(format!("Title translation failed: {error}")),
+                });
         })
         .detach();
     }
@@ -229,18 +284,26 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn translate_title_manually(&mut self, id: i64, cx: &mut Context<Self>) {
-        let Some(row) = self.list.articles.iter().find(|row| row.id == id) else {
-            if let Some(article) = self
-                .reader
-                .article
-                .as_ref()
-                .filter(|article| article.summary.id == id)
-            {
-                self.queue_manual_title_translation(id, article.summary.title.clone(), cx);
+        let title = self
+            .list
+            .read(cx)
+            .articles
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.title.clone());
+        let Some(title) = title else {
+            if let Some(title) = self.read_article_reader(cx, |reader| {
+                reader
+                    .article
+                    .as_ref()
+                    .filter(|article| article.summary.id == id)
+                    .map(|article| article.summary.title.clone())
+            }) {
+                self.queue_manual_title_translation(id, title, cx);
             }
             return;
         };
-        self.queue_manual_title_translation(id, row.title.clone(), cx);
+        self.queue_manual_title_translation(id, title, cx);
     }
 
     fn queue_manual_title_translation(&mut self, id: i64, title: String, cx: &mut Context<Self>) {
@@ -264,23 +327,27 @@ impl ReaderWindow {
                 Ok(outcome) => {
                     this.title_translation_usage = outcome.usage;
                     for (id, original, translated, lang) in outcome.translated {
-                        if let Some(row) = Arc::make_mut(&mut this.list.articles)
-                            .iter_mut()
-                            .find(|row| row.id == id && row.title == original)
-                        {
-                            row.auto_translated_title = Some(translated.clone());
-                            row.auto_translated_title_lang = Some(lang.clone());
-                            row.auto_translated_title_source_hash =
-                                Some(panda_translate::title_source_hash(&original));
-                        }
-                        if let Some(article) = this.reader.article.as_mut().filter(|article| {
-                            article.summary.id == id && article.summary.title == original
-                        }) {
-                            article.summary.auto_translated_title = Some(translated);
-                            article.summary.auto_translated_title_lang = Some(lang);
-                            article.summary.auto_translated_title_source_hash =
-                                Some(panda_translate::title_source_hash(&original));
-                        }
+                        this.update_article_list(cx, |list, _| {
+                            if let Some(row) = Arc::make_mut(&mut list.articles)
+                                .iter_mut()
+                                .find(|row| row.id == id && row.title == original)
+                            {
+                                row.auto_translated_title = Some(translated.clone());
+                                row.auto_translated_title_lang = Some(lang.clone());
+                                row.auto_translated_title_source_hash =
+                                    Some(panda_translate::title_source_hash(&original));
+                            }
+                        });
+                        this.update_article_reader(cx, |reader| {
+                            if let Some(article) = reader.article.as_mut().filter(|article| {
+                                article.summary.id == id && article.summary.title == original
+                            }) {
+                                article.summary.auto_translated_title = Some(translated);
+                                article.summary.auto_translated_title_lang = Some(lang);
+                                article.summary.auto_translated_title_source_hash =
+                                    Some(panda_translate::title_source_hash(&original));
+                            }
+                        });
                     }
                     if let Some(status) = outcome.status {
                         match status {
@@ -308,40 +375,33 @@ impl ReaderWindow {
         unread_only: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.list.articles.is_empty() {
-            if delta > 0 && self.can_load_more() {
-                self.list.pending_navigation = Some((delta, unread_only, 0));
+        let articles = self.list.read(cx).articles.clone();
+        if articles.is_empty() {
+            if delta > 0 && self.can_load_more(cx) {
+                self.update_article_list(cx, |list, _| {
+                    list.pending_navigation = Some((delta, unread_only, 0));
+                });
                 self.load_more_articles(cx);
             }
             return;
         }
-        let current = self
-            .reader
-            .article
-            .as_ref()
-            .map(|article| article.summary.id);
-        let current_index =
-            current.and_then(|id| self.list.articles.iter().position(|row| row.id == id));
+        let current = self.read_article_reader(cx, |reader| {
+            reader.article.as_ref().map(|article| article.summary.id)
+        });
+        let current_index = current.and_then(|id| articles.iter().position(|row| row.id == id));
         let next_id = if unread_only {
             match (delta > 0, current_index) {
-                (true, Some(index)) => self.list.articles[index + 1..]
+                (true, Some(index)) => articles[index + 1..]
                     .iter()
                     .find(|row| !row.is_read)
                     .map(|row| row.id),
-                (true, None) => self
-                    .list
-                    .articles
-                    .iter()
-                    .find(|row| !row.is_read)
-                    .map(|row| row.id),
-                (false, Some(index)) => self.list.articles[..index]
+                (true, None) => articles.iter().find(|row| !row.is_read).map(|row| row.id),
+                (false, Some(index)) => articles[..index]
                     .iter()
                     .rev()
                     .find(|row| !row.is_read)
                     .map(|row| row.id),
-                (false, None) => self
-                    .list
-                    .articles
+                (false, None) => articles
                     .iter()
                     .rev()
                     .find(|row| !row.is_read)
@@ -351,10 +411,12 @@ impl ReaderWindow {
             let next_index = match current_index {
                 Some(index) => {
                     let next = index as isize + delta;
-                    if next < 0 || next >= self.list.articles.len() as isize {
-                        if next >= self.list.articles.len() as isize && delta > 0 {
-                            self.list.pending_navigation =
-                                Some((delta, unread_only, self.list.articles.len()));
+                    if next < 0 || next >= articles.len() as isize {
+                        if next >= articles.len() as isize && delta > 0 {
+                            self.update_article_list(cx, |list, _| {
+                                list.pending_navigation =
+                                    Some((delta, unread_only, articles.len()));
+                            });
                             self.load_more_articles(cx);
                         }
                         return;
@@ -362,32 +424,35 @@ impl ReaderWindow {
                     next as usize
                 }
                 None if delta > 0 => 0,
-                None => self.list.articles.len().saturating_sub(1),
+                None => articles.len().saturating_sub(1),
             };
-            Some(self.list.articles[next_index].id)
+            Some(articles[next_index].id)
         };
         if let Some(id) = next_id {
-            if let Some(index) = self.list.articles.iter().position(|row| row.id == id) {
+            if let Some(index) = articles.iter().position(|row| row.id == id) {
                 self.list
+                    .read(cx)
                     .scroll
                     .scroll_to_item(index, ScrollStrategy::Center);
             }
             self.open_article(id, cx);
-        } else if delta > 0 && self.can_load_more() {
-            self.list.pending_navigation = Some((delta, unread_only, self.list.articles.len()));
+        } else if delta > 0 && self.can_load_more(cx) {
+            self.update_article_list(cx, |list, _| {
+                list.pending_navigation = Some((delta, unread_only, articles.len()));
+            });
             self.load_more_articles(cx);
         }
     }
 
     pub(in crate::ui) fn load_more_articles(&mut self, cx: &mut Context<Self>) {
-        if !self.can_load_more() || self.list.is_loading_more {
+        if !self.can_load_more(cx) || self.list.read(cx).is_loading_more {
             return;
         }
-        self.list.is_loading_more = true;
+        self.update_article_list(cx, |list, _| list.is_loading_more = true);
         self.load_snapshot_page(true, cx);
     }
 
-    pub(in crate::ui) fn can_load_more(&self) -> bool {
-        self.list.has_more
+    pub(in crate::ui) fn can_load_more(&self, cx: &App) -> bool {
+        self.list.read(cx).has_more
     }
 }

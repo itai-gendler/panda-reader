@@ -331,13 +331,19 @@ impl Settings {
             window,
             |this, _, event, window, cx| {
                 if let SelectEvent::Confirm(Some(kind)) = event {
-                    if let Some(article_id) = this.reader.requested_article_id.take() {
+                    let (requested_article, translating_article) =
+                        this.update_article_reader(cx, |reader| {
+                            let requested_article = reader.requested_article_id.take();
+                            let translating_article = reader.translating_article_id.take();
+                            reader.translation_epoch.next();
+                            (requested_article, translating_article)
+                        });
+                    if let Some(article_id) = requested_article {
                         this.services.cancel_article_work(article_id);
                     }
-                    if let Some(article_id) = this.reader.translating_article_id.take() {
+                    if let Some(article_id) = translating_article {
                         this.services.cancel_article_work(article_id);
                     }
-                    this.reader.translation_epoch.next();
                     this.settings.library_source = *kind;
                     this.preferences.library_source = *kind;
                     this.save_preferences();
@@ -369,16 +375,23 @@ impl Settings {
                             cx,
                         )
                     });
-                    this.list.scope = Scope::All;
-                    this.reader.request_epoch.next();
-                    this.reader.is_extracting = false;
-                    this.reader.translation_incomplete = false;
-                    this.reader.article = None;
-                    this.reader.body_html = SharedString::default();
-                    this.reader.body_markdown = SharedString::default();
-                    this.reader.showing_translation = false;
-                    this.list.articles = Arc::new(Vec::new());
-                    this.sidebar.feeds.clear();
+                    this.update_article_list(cx, |list, _| list.scope = Scope::All);
+                    this.update_article_reader(cx, |reader| {
+                        reader.request_epoch.next();
+                        reader.is_extracting = false;
+                        reader.translation_incomplete = false;
+                        reader.article = None;
+                        reader.body_html = SharedString::default();
+                        reader.body_markdown = SharedString::default();
+                        reader.showing_translation = false;
+                    });
+                    this.update_article_list(cx, |list, _| {
+                        list.articles = Arc::new(Vec::new());
+                    });
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.feeds.clear();
+                        cx.notify();
+                    });
                     this.load_snapshot(cx);
                     cx.notify();
                 }

@@ -4,4 +4,4 @@ mod actions;
 mod state;
 mod view;
 
-pub(in crate::ui) use state::ArticleView;
+pub(in crate::ui) use state::{ArticleView, ArticleViewEvent};

@@ -1,6 +1,6 @@
 use crate::app::preferences::ReaderFontFamily;
 use crate::ui::components::{BundledIcon, article_font_family, bundled_icon, preview_text};
-use crate::ui::window::ReaderWindow;
+use crate::ui::i18n;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::base::text::{MarkdownNode, MarkdownPlugin, markdown_ast};
 use gpui_kit::component::{
@@ -14,16 +14,15 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use panda_core::{MarkField, Scope, TranslationLayout};
+use panda_core::{MarkField, TranslationLayout};
 
-use super::state::ArticleView;
+use super::state::{ArticleView, ArticleViewEvent};
 
 impl ArticleView {
-    pub(in crate::ui) fn render_reader(
-        &self,
-        owner: &ReaderWindow,
-        cx: &mut Context<ReaderWindow>,
-    ) -> impl IntoElement {
+    fn render_reader(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let reader_entity = cx.entity().downgrade();
+        let menu_emit = super::super::context_menus::pane_menu_emitter(reader_entity.clone());
+        let language = self.preferences.language;
         let mut reader = v_flex()
             .flex_1()
             .h_full()
@@ -33,20 +32,24 @@ impl ArticleView {
         if let Some(article) = &self.article {
             let summary = &article.summary;
             let id = summary.id;
-            let menu_app = cx.entity().downgrade();
-            let image_viewer_app = cx.entity().downgrade();
+            let menu_emit = menu_emit.clone();
             let menu_article = summary.clone();
-            let language = owner.preferences.language;
-            let star_label = owner.t(if summary.is_starred {
-                "Remove star"
-            } else {
-                "Star"
-            });
-            let later_label = owner.t(if summary.read_later {
-                "Remove from Read Later"
-            } else {
-                "Read Later"
-            });
+            let star_label = i18n::text(
+                language,
+                if summary.is_starred {
+                    "Remove star"
+                } else {
+                    "Star"
+                },
+            );
+            let later_label = i18n::text(
+                language,
+                if summary.read_later {
+                    "Remove from Read Later"
+                } else {
+                    "Read Later"
+                },
+            );
             let next_starred = !summary.is_starred;
             let next_later = !summary.read_later;
             let starred = summary.is_starred;
@@ -75,25 +78,44 @@ impl ArticleView {
                             BundledIcon::Star
                         }))
                         .tooltip(star_label)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.mark(id, MarkField::Starred, next_starred, cx)
-                        })),
+                        .on_click({
+                            let reader_entity = reader_entity.clone();
+                            move |_, _, cx| {
+                                let _ = reader_entity.update(cx, |_, cx| {
+                                    cx.emit(ArticleViewEvent::Mark {
+                                        article_id: id,
+                                        field: MarkField::Starred,
+                                        value: next_starred,
+                                    });
+                                });
+                            }
+                        }),
                 )
                 .child(
                     Button::new("toggle-hide-images")
                         .small()
                         .ghost()
-                        .icon(bundled_icon(if owner.preferences.hide_images {
+                        .icon(bundled_icon(if self.preferences.hide_images {
                             BundledIcon::ImageOff
                         } else {
                             BundledIcon::Image
                         }))
-                        .tooltip(owner.t(if owner.preferences.hide_images {
-                            "Show images"
-                        } else {
-                            "Hide images"
-                        }))
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_hide_images(cx))),
+                        .tooltip(i18n::text(
+                            language,
+                            if self.preferences.hide_images {
+                                "Show images"
+                            } else {
+                                "Hide images"
+                            },
+                        ))
+                        .on_click({
+                            let reader_entity = reader_entity.clone();
+                            move |_, _, cx| {
+                                let _ = reader_entity.update(cx, |_, cx| {
+                                    cx.emit(ArticleViewEvent::ToggleHideImages);
+                                });
+                            }
+                        }),
                 )
                 .child(
                     Button::new("toggle-later")
@@ -105,9 +127,18 @@ impl ArticleView {
                             BundledIcon::Bookmark
                         }))
                         .tooltip(later_label)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.mark(id, MarkField::Later, next_later, cx)
-                        })),
+                        .on_click({
+                            let reader_entity = reader_entity.clone();
+                            move |_, _, cx| {
+                                let _ = reader_entity.update(cx, |_, cx| {
+                                    cx.emit(ArticleViewEvent::Mark {
+                                        article_id: id,
+                                        field: MarkField::Later,
+                                        value: next_later,
+                                    });
+                                });
+                            }
+                        }),
                 );
             if article.url.is_some() {
                 let has_full_text = article.extracted_html.is_some();
@@ -117,39 +148,54 @@ impl ArticleView {
                         .ghost()
                         .icon(IconName::FileText)
                         .loading(self.is_extracting)
-                        .tooltip(owner.t(if has_full_text {
-                            "Re-extract full text"
-                        } else {
-                            "Extract full text"
-                        }))
-                        .on_click(cx.listener(move |this, _, _, cx| this.extract(id, true, cx))),
+                        .tooltip(i18n::text(
+                            language,
+                            if has_full_text {
+                                "Re-extract full text"
+                            } else {
+                                "Extract full text"
+                            },
+                        ))
+                        .on_click({
+                            let reader_entity = reader_entity.clone();
+                            move |_, _, cx| {
+                                let _ = reader_entity.update(cx, |_, cx| {
+                                    cx.emit(ArticleViewEvent::ExtractFullText(id));
+                                });
+                            }
+                        }),
                 );
             }
             let translate_label = if self.showing_translation {
-                owner.t("Show original")
+                i18n::text(language, "Show original")
             } else if self.has_translation_for_ui(
                 article,
-                &owner.preferences,
-                &owner.translator_config.revision_cache_id(),
+                &self.preferences,
+                &self.translator_config.revision_cache_id(),
             ) {
-                owner.t("Show translation")
+                i18n::text(language, "Show translation")
             } else {
-                owner.t("Translate")
+                i18n::text(language, "Translate")
             };
             if self.translating_article_id == Some(id) {
                 toolbar = toolbar.child(
                     Button::new("cancel-translation")
                         .small()
                         .ghost()
-                        .tooltip(owner.t("Cancel"))
+                        .tooltip(i18n::text(language, "Cancel"))
                         .child(
                             Icon::new(IconName::Loader).transform(Transformation::rotate(
                                 percentage((self.translation_spinner_frame % 8) as f32 / 8.),
                             )),
                         )
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.toggle_or_translate(id, cx)),
-                        ),
+                        .on_click({
+                            let reader_entity = reader_entity.clone();
+                            move |_, _, cx| {
+                                let _ = reader_entity.update(cx, |_, cx| {
+                                    cx.emit(ArticleViewEvent::ToggleTranslation(id));
+                                });
+                            }
+                        }),
                 );
             } else {
                 toolbar = toolbar.child(
@@ -158,9 +204,14 @@ impl ArticleView {
                         .ghost()
                         .icon(IconName::Globe)
                         .tooltip(translate_label)
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.toggle_or_translate(id, cx)),
-                        ),
+                        .on_click({
+                            let reader_entity = reader_entity.clone();
+                            move |_, _, cx| {
+                                let _ = reader_entity.update(cx, |_, cx| {
+                                    cx.emit(ArticleViewEvent::ToggleTranslation(id));
+                                });
+                            }
+                        }),
                 );
             }
             if self.showing_translation {
@@ -168,12 +219,25 @@ impl ArticleView {
                     Button::new("translation-layout")
                         .small()
                         .ghost()
-                        .tooltip(owner.t(owner.preferences.translation_layout.label()))
-                        .label(owner.t(match owner.preferences.translation_layout {
-                            TranslationLayout::Immersive => "Bilingual",
-                            TranslationLayout::Replaced => "Translated",
-                        }))
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_translation_layout(cx))),
+                        .tooltip(i18n::text(
+                            language,
+                            self.preferences.translation_layout.label(),
+                        ))
+                        .label(i18n::text(
+                            language,
+                            match self.preferences.translation_layout {
+                                TranslationLayout::Immersive => "Bilingual",
+                                TranslationLayout::Replaced => "Translated",
+                            },
+                        ))
+                        .on_click({
+                            let reader_entity = reader_entity.clone();
+                            move |_, _, cx| {
+                                let _ = reader_entity.update(cx, |_, cx| {
+                                    cx.emit(ArticleViewEvent::ToggleTranslationLayout);
+                                });
+                            }
+                        }),
                 );
             }
             if article.url.is_some() || summary.url.is_some() {
@@ -182,8 +246,15 @@ impl ArticleView {
                         .small()
                         .ghost()
                         .icon(bundled_icon(BundledIcon::Share))
-                        .tooltip(owner.t("Share link"))
-                        .on_click(cx.listener(|this, _, _, cx| this.share_article(cx))),
+                        .tooltip(i18n::text(language, "Share link"))
+                        .on_click({
+                            let reader_entity = reader_entity.clone();
+                            move |_, _, cx| {
+                                let _ = reader_entity.update(cx, |_, cx| {
+                                    cx.emit(ArticleViewEvent::ShareArticle);
+                                });
+                            }
+                        }),
                 );
             }
             if let Some(url) = article.url.clone() {
@@ -192,13 +263,14 @@ impl ArticleView {
                         .small()
                         .ghost()
                         .icon(IconName::ExternalLink)
-                        .tooltip(owner.t("Open original"))
+                        .tooltip(i18n::text(language, "Open original"))
                         .on_click(move |_, _, cx| cx.open_url(&url)),
                 );
             }
-            let published = summary.published_at.as_deref().and_then(|value| {
-                super::super::date::format_published_at(value, owner.preferences.language, true)
-            });
+            let published = summary
+                .published_at
+                .as_deref()
+                .and_then(|value| super::super::date::format_published_at(value, language, true));
             let feed_id = summary.feed_id;
             let mut meta = h_flex().items_center().gap_2().child(
                 div()
@@ -206,9 +278,14 @@ impl ArticleView {
                     .cursor_pointer()
                     .text_color(cx.theme().primary)
                     .child(summary.feed_title.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_scope_preserving_article(Scope::Feed(feed_id), cx)
-                    })),
+                    .on_click({
+                        let reader_entity = reader_entity.clone();
+                        move |_, _, cx| {
+                            let _ = reader_entity.update(cx, |_, cx| {
+                                cx.emit(ArticleViewEvent::SelectFeed(feed_id));
+                            });
+                        }
+                    }),
             );
             if let Some(author) = summary
                 .author
@@ -239,11 +316,11 @@ impl ArticleView {
             // Immersive translation places a translated block after each
             // source block, so the normal paragraph gap looks doubled there.
             let paragraph_gap = if self.showing_translation
-                && owner.preferences.translation_layout == TranslationLayout::Immersive
+                && self.preferences.translation_layout == TranslationLayout::Immersive
             {
-                owner.preferences.reader_paragraph_spacing * 0.45
+                self.preferences.reader_paragraph_spacing * 0.45
             } else {
-                owner.preferences.reader_paragraph_spacing
+                self.preferences.reader_paragraph_spacing
             };
             article_style = article_style
                 .paragraph_gap(rems(paragraph_gap))
@@ -257,30 +334,30 @@ impl ArticleView {
                 .gap_2()
                 .pt_4()
                 .pb_5()
-                .mb(rems(owner.preferences.reader_paragraph_spacing))
+                .mb(rems(self.preferences.reader_paragraph_spacing))
                 .border_b_1()
                 .border_color(cx.theme().border)
                 .child(
                     TextView::html(
                         "article-title",
-                        escape_html_text(&self.display_title(article, &owner.preferences)),
+                        escape_html_text(&self.display_title(article, &self.preferences)),
                     )
                     .selectable(true)
                     .text_3xl()
                     .font_semibold()
                     .font(article_font_family(
-                        owner.preferences.reader_font_family == ReaderFontFamily::Serif,
+                        self.preferences.reader_font_family == ReaderFontFamily::Serif,
                     )),
                 )
                 .when_some(
-                    self.display_translated_title(article, &owner.preferences),
+                    self.display_translated_title(article, &self.preferences),
                     |view, title| {
                         view.child(
                             TextView::html("article-translated-title", escape_html_text(&title))
                                 .selectable(true)
                                 .text_xl()
                                 .font(article_font_family(
-                                    owner.preferences.reader_font_family == ReaderFontFamily::Serif,
+                                    self.preferences.reader_font_family == ReaderFontFamily::Serif,
                                 ))
                                 .text_color(cx.theme().muted_foreground),
                         )
@@ -293,12 +370,12 @@ impl ArticleView {
                     .h_full()
                     .min_w_0()
                     .context_menu(move |menu, window, cx| {
-                        ReaderWindow::article_context_menu(
+                        super::super::context_menus::article_context_menu(
                             menu,
                             window,
                             cx,
                             &menu_article,
-                            &menu_app,
+                            &menu_emit,
                             language,
                             true,
                         )
@@ -371,13 +448,18 @@ impl ArticleView {
                                     .w_full()
                                     .overflow_y_scroll()
                                     .track_scroll(&self.scroll)
-                                    .on_scroll_wheel(cx.listener(|this, _, _, cx| {
-                                        this.schedule_reading_progress_save(cx);
-                                    }))
+                                    .on_scroll_wheel({
+                                        let reader_entity = reader_entity.clone();
+                                        move |_, _, cx| {
+                                            let _ = reader_entity.update(cx, |_, cx| {
+                                                cx.emit(ArticleViewEvent::SaveReadingProgress);
+                                            });
+                                        }
+                                    })
                                     .child(
                                         v_flex()
                                             .w_full()
-                                            .max_w(px(owner.preferences.reader_content_width))
+                                            .max_w(px(self.preferences.reader_content_width))
                                             .mx_auto()
                                             .px(px(48.))
                                             .child(heading)
@@ -389,49 +471,49 @@ impl ArticleView {
                                                 .plugin(TranslationMarkdown {
                                                     style: article_style.clone(),
                                                     font: article_font_family(
-                                                        owner.preferences.reader_font_family
+                                                        self.preferences.reader_font_family
                                                             == ReaderFontFamily::Serif,
                                                     ),
-                                                    font_size: px(owner
+                                                    font_size: px(self
                                                         .preferences
                                                         .reader_font_size),
                                                     line_height: rems(
-                                                        owner.preferences.reader_line_height,
+                                                        self.preferences.reader_line_height,
                                                     ),
                                                     heading_gap: rems(
-                                                        owner.preferences.reader_paragraph_spacing
+                                                        self.preferences.reader_paragraph_spacing
                                                             * 0.5,
                                                     ),
                                                     image_urls: self.image_urls.clone(),
-                                                    image_viewer_app: image_viewer_app.clone(),
+                                                    image_viewer: reader_entity.clone(),
                                                 })
                                                 .plugin(ArticleHeadingMarkdown {
                                                     style: article_style.clone(),
                                                     font: article_font_family(
-                                                        owner.preferences.reader_font_family
+                                                        self.preferences.reader_font_family
                                                             == ReaderFontFamily::Serif,
                                                     ),
                                                     line_height: rems(
-                                                        owner.preferences.reader_line_height,
+                                                        self.preferences.reader_line_height,
                                                     ),
                                                     heading_gap: rems(
-                                                        owner.preferences.reader_paragraph_spacing
+                                                        self.preferences.reader_paragraph_spacing
                                                             * 0.5,
                                                     ),
                                                 })
                                                 .plugin(ArticleImageMarkdown {
                                                     image_urls: self.image_urls.clone(),
-                                                    app: image_viewer_app.clone(),
+                                                    article_view: reader_entity.clone(),
                                                 })
                                                 .scrollable(false)
                                                 .w_full()
                                                 .font(article_font_family(
-                                                    owner.preferences.reader_font_family
+                                                    self.preferences.reader_font_family
                                                         == ReaderFontFamily::Serif,
                                                 ))
-                                                .text_size(px(owner.preferences.reader_font_size))
+                                                .text_size(px(self.preferences.reader_font_size))
                                                 .line_height(rems(
-                                                    owner.preferences.reader_line_height,
+                                                    self.preferences.reader_line_height,
                                                 ))
                                                 .style(article_style)
                                                 .pb_12()
@@ -441,17 +523,14 @@ impl ArticleView {
                                                             |index| index.parse::<usize>().ok(),
                                                         )
                                                     {
-                                                        let _ = image_viewer_app.update(
-                                                            cx,
-                                                            |this, cx| {
-                                                                this.reader.image_viewer_url = this
-                                                                    .reader
-                                                                    .image_urls
-                                                                    .get(index)
-                                                                    .cloned();
-                                                                cx.notify();
-                                                            },
-                                                        );
+                                                        let _ =
+                                                            reader_entity.update(cx, |_, cx| {
+                                                                cx.emit(
+                                                                    ArticleViewEvent::OpenImage(
+                                                                        index,
+                                                                    ),
+                                                                );
+                                                            });
                                                     } else {
                                                         cx.open_url(url);
                                                     }
@@ -472,17 +551,26 @@ impl ArticleView {
                         div()
                             .text_2xl()
                             .font_semibold()
-                            .child(owner.t("Start reading")),
+                            .child(i18n::text(language, "Start reading")),
                     )
                     .child(
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(owner.t("Select an article from the list to begin")),
+                            .child(i18n::text(
+                                language,
+                                "Select an article from the list to begin",
+                            )),
                     ),
             );
         }
         reader
+    }
+}
+
+impl Render for ArticleView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_reader(cx)
     }
 }
 
@@ -493,7 +581,7 @@ struct TranslationMarkdown {
     line_height: gpui::Rems,
     heading_gap: gpui::Rems,
     image_urls: Vec<String>,
-    image_viewer_app: gpui::WeakEntity<ReaderWindow>,
+    image_viewer: gpui::WeakEntity<ArticleView>,
 }
 
 impl MarkdownPlugin for TranslationMarkdown {
@@ -539,7 +627,7 @@ impl MarkdownPlugin for TranslationMarkdown {
             })
             .plugin(ArticleImageMarkdown {
                 image_urls: self.image_urls.clone(),
-                app: self.image_viewer_app.clone(),
+                article_view: self.image_viewer.clone(),
             })
             .font(self.font.clone())
             .text_size(self.font_size)
@@ -556,7 +644,7 @@ struct ArticleImageData {
 
 struct ArticleImageMarkdown {
     image_urls: Vec<String>,
-    app: gpui::WeakEntity<ReaderWindow>,
+    article_view: gpui::WeakEntity<ArticleView>,
 }
 
 impl MarkdownPlugin for ArticleImageMarkdown {
@@ -603,7 +691,7 @@ impl MarkdownPlugin for ArticleImageMarkdown {
         let mut container = div().w_full().min_w_0().py_2();
         if let Some(image) = node.data::<ArticleImageData>() {
             let index = image.index;
-            let app = self.app.clone();
+            let article_view = self.article_view.clone();
             container = container.child(
                 div().w_full().min_w_0().flex().justify_center().child(
                     img(image.url.clone())
@@ -611,10 +699,8 @@ impl MarkdownPlugin for ArticleImageMarkdown {
                         .max_w_full()
                         .cursor_pointer()
                         .on_click(move |_, _, cx| {
-                            let _ = app.update(cx, |this, cx| {
-                                this.reader.image_viewer_url =
-                                    this.reader.image_urls.get(index).cloned();
-                                cx.notify();
+                            let _ = article_view.update(cx, |_, cx| {
+                                cx.emit(ArticleViewEvent::OpenImage(index));
                             });
                         }),
                 ),

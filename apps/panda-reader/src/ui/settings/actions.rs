@@ -285,7 +285,8 @@ impl ReaderWindow {
                 cx,
             )
         });
-        self.list.search_input.update(cx, |input, cx| {
+        let search_input = self.list.read(cx).search_input.clone();
+        search_input.update(cx, |input, cx| {
             input.set_placeholder(
                 i18n::text(self.preferences.language, "Search articles"),
                 window,
@@ -430,7 +431,8 @@ impl ReaderWindow {
         self.settings.add_input.update(cx, |input, cx| {
             input.set_placeholder(i18n::text(language, "Feed URL https://…"), window, cx)
         });
-        self.list.search_input.update(cx, |input, cx| {
+        let search_input = self.list.read(cx).search_input.clone();
+        search_input.update(cx, |input, cx| {
             input.set_placeholder(i18n::text(language, "Search articles"), window, cx)
         });
         self.settings
@@ -502,9 +504,9 @@ impl ReaderWindow {
         cx: &mut Context<Self>,
     ) {
         self.preferences.translation_language = language;
-        let loaded = self.list.articles.as_ref().clone();
-        if self.reader.showing_translation {
-            self.reader.showing_translation = false;
+        let loaded = self.list.read(cx).articles.as_ref().clone();
+        if self.read_article_reader(cx, |reader| reader.showing_translation) {
+            self.update_article_reader(cx, |reader| reader.showing_translation = false);
             self.request_prepared_body(cx);
         }
         self.save_preferences();
@@ -520,7 +522,7 @@ impl ReaderWindow {
         self.preferences.auto_translate_titles = enabled;
         self.save_preferences();
         if enabled {
-            let rows = self.list.articles.as_ref().clone();
+            let rows = self.list.read(cx).articles.as_ref().clone();
             self.queue_title_translations(&rows, cx);
         }
         cx.notify();
@@ -536,7 +538,7 @@ impl ReaderWindow {
         if self.preferences.auto_translate_titles && enabled {
             self.reset_title_translation_cutoffs(cx);
         } else if self.preferences.auto_translate_titles {
-            let rows = self.list.articles.as_ref().clone();
+            let rows = self.list.read(cx).articles.as_ref().clone();
             self.queue_title_translations(&rows, cx);
         }
         cx.notify();

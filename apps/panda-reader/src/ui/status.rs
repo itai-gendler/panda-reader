@@ -1,5 +1,4 @@
 use crate::ui::i18n;
-use crate::ui::settings::SettingsPage;
 use crate::ui::window::ReaderWindow;
 use chrono::{DateTime, Local};
 use gpui_kit::component::{ActiveTheme as _, h_flex};
@@ -19,6 +18,50 @@ pub(in crate::ui) struct Status {
     pub(in crate::ui) status: Option<String>,
     pub(in crate::ui) tone: StatusTone,
     pub(in crate::ui) token: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct StatusBarPresentation {
+    pub(in crate::ui) context: String,
+    pub(in crate::ui) message: String,
+    pub(in crate::ui) tone: StatusTone,
+    pub(in crate::ui) update_prompt: bool,
+    pub(in crate::ui) right: String,
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::ui) enum StatusBarEvent {
+    OpenAbout,
+}
+
+pub(in crate::ui) struct StatusBar {
+    presentation: StatusBarPresentation,
+}
+
+impl EventEmitter<StatusBarEvent> for StatusBar {}
+
+impl StatusBar {
+    pub(in crate::ui) fn set_presentation(&mut self, presentation: StatusBarPresentation) -> bool {
+        if self.presentation == presentation {
+            return false;
+        }
+        self.presentation = presentation;
+        true
+    }
+}
+
+impl Default for StatusBar {
+    fn default() -> Self {
+        Self {
+            presentation: StatusBarPresentation {
+                context: String::new(),
+                message: String::new(),
+                tone: StatusTone::Busy,
+                update_prompt: false,
+                right: String::new(),
+            },
+        }
+    }
 }
 
 impl ReaderWindow {
@@ -63,14 +106,16 @@ impl ReaderWindow {
         }
     }
 
-    pub(in crate::ui) fn status_context_label(&self) -> String {
-        let scope = match &self.list.scope {
+    pub(in crate::ui) fn status_context_label(&self, cx: &App) -> String {
+        let current_scope = self.list.read(cx).scope.clone();
+        let scope = match &current_scope {
             Scope::All => self.t("All Articles"),
             Scope::Unread => self.t("Unread"),
             Scope::Starred => self.t("Starred"),
             Scope::Later => self.t("Read Later"),
             Scope::Feed(id) => self
                 .sidebar
+                .read(cx)
                 .feeds
                 .iter()
                 .find(|feed| feed.id == *id)
@@ -81,7 +126,11 @@ impl ReaderWindow {
         format!(
             "{} · {}",
             scope,
-            i18n::format(self.preferences.language, "{} unread", self.unread_total())
+            i18n::format(
+                self.preferences.language,
+                "{} unread",
+                self.unread_total(cx)
+            )
         )
     }
 }
@@ -97,12 +146,12 @@ impl Default for Status {
 }
 
 impl Status {
-    pub(in crate::ui) fn render_status_bar(
+    pub(in crate::ui) fn presentation(
         &self,
         owner: &ReaderWindow,
-        cx: &mut Context<ReaderWindow>,
-    ) -> impl IntoElement {
-        let (mid, update_prompt) = match &owner.update_status {
+        cx: &App,
+    ) -> StatusBarPresentation {
+        let (message, update_prompt) = match &owner.update_status {
             crate::updater::UpdateStatus::Ready(update) => (
                 format!("{} · {}", owner.t("Update ready"), update.version),
                 true,
@@ -116,15 +165,7 @@ impl Status {
             ),
             _ => (self.status.clone().unwrap_or_default(), false),
         };
-        let mid_color = if update_prompt {
-            cx.theme().primary
-        } else {
-            match self.tone {
-                StatusTone::Error => cx.theme().danger,
-                StatusTone::Busy | StatusTone::Flash => cx.theme().muted_foreground,
-            }
-        };
-        let provider = if owner.sidebar.is_refreshing || owner.settings.is_connecting {
+        let provider = if owner.sidebar.read(cx).is_refreshing || owner.settings.is_connecting {
             owner.t("Syncing…").to_owned()
         } else {
             owner
@@ -146,6 +187,38 @@ impl Status {
                 format!("{provider} · {label}")
             }
         });
+        StatusBarPresentation {
+            context: owner.status_context_label(cx),
+            message,
+            tone: self.tone,
+            update_prompt,
+            right,
+        }
+    }
+}
+
+impl ReaderWindow {
+    pub(in crate::ui) fn sync_status_bar(&self, cx: &mut Context<Self>) {
+        let presentation = self.status.presentation(self, cx);
+        self.status_view.update(cx, |status_bar, status_cx| {
+            if status_bar.set_presentation(presentation) {
+                status_cx.notify();
+            }
+        });
+    }
+}
+
+impl Render for StatusBar {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let presentation = &self.presentation;
+        let mid_color = if presentation.update_prompt {
+            cx.theme().primary
+        } else {
+            match presentation.tone {
+                StatusTone::Error => cx.theme().danger,
+                StatusTone::Busy | StatusTone::Flash => cx.theme().muted_foreground,
+            }
+        };
         h_flex()
             .w_full()
             .h(px(24.))
@@ -163,7 +236,7 @@ impl Status {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .child(owner.status_context_label()),
+                    .child(presentation.context.clone()),
             )
             .child(
                 div()
@@ -173,12 +246,10 @@ impl Status {
                     .truncate()
                     .text_center()
                     .text_color(mid_color)
-                    .child(mid)
-                    .when(update_prompt, |el| {
-                        el.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
-                            this.settings.open = true;
-                            this.settings.page = SettingsPage::About;
-                            cx.notify();
+                    .child(presentation.message.clone())
+                    .when(presentation.update_prompt, |el| {
+                        el.cursor_pointer().on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(StatusBarEvent::OpenAbout);
                         }))
                     }),
             )
@@ -188,7 +259,7 @@ impl Status {
                     .min_w_0()
                     .truncate()
                     .text_right()
-                    .child(right),
+                    .child(presentation.right.clone()),
             )
     }
 }

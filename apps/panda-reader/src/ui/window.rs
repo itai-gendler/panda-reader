@@ -5,8 +5,13 @@ use super::commands::keymap::{
     VimPreviousUnread, VimRefresh, VimShowHelp, VimToggleLater, VimToggleRead, VimToggleStar,
 };
 use super::{
-    article_list::ArticleList, article_view::ArticleView, feed_editor::FeedEditor,
-    quote_poster::QuotePoster, settings::Settings, sidebar::Sidebar, status::Status,
+    article_list::ArticleList,
+    article_view::ArticleView,
+    feed_editor::FeedEditor,
+    quote_poster::QuotePoster,
+    settings::Settings,
+    sidebar::Sidebar,
+    status::{Status, StatusBar},
 };
 use crate::app::preferences::Preferences;
 use crate::services::AppServices;
@@ -23,6 +28,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use panda_core::Scope;
 use panda_providers::ProviderSettingsMap;
 use panda_translate::TranslatorConfig;
 use std::collections::HashMap;
@@ -38,13 +44,15 @@ pub struct ReaderWindow {
     pub(in crate::ui) translator_config: TranslatorConfig,
     pub(in crate::ui) translator_path: PathBuf,
     pub(in crate::ui) palette: PaletteState,
-    pub(in crate::ui) sidebar: Sidebar,
-    pub(in crate::ui) list: ArticleList,
-    pub(in crate::ui) reader: ArticleView,
+    pub(in crate::ui) sidebar: Entity<Sidebar>,
+    pub(in crate::ui) pane_subscriptions: Vec<Subscription>,
+    pub(in crate::ui) list: Entity<ArticleList>,
+    pub(in crate::ui) reader: Entity<ArticleView>,
     pub(in crate::ui) settings: Settings,
     pub(in crate::ui) editor: FeedEditor,
     pub(in crate::ui) quote_poster: Option<QuotePoster>,
     pub(in crate::ui) status: Status,
+    pub(in crate::ui) status_view: Entity<StatusBar>,
     pub(in crate::ui) title_translation_usage: Vec<panda_core::TranslationUsage>,
     pub(in crate::ui) data_dir: PathBuf,
     pub(in crate::ui) update_status: UpdateStatus,
@@ -55,6 +63,38 @@ pub struct ReaderWindow {
 }
 
 impl ReaderWindow {
+    pub(in crate::ui) fn update_article_reader<R>(
+        &self,
+        cx: &mut Context<Self>,
+        update: impl FnOnce(&mut ArticleView) -> R,
+    ) -> R {
+        self.reader.update(cx, |reader, reader_cx| {
+            let result = update(reader);
+            reader_cx.notify();
+            result
+        })
+    }
+
+    pub(in crate::ui) fn read_article_reader<R>(
+        &self,
+        cx: &App,
+        read: impl FnOnce(&ArticleView) -> R,
+    ) -> R {
+        read(self.reader.read(cx))
+    }
+
+    pub(in crate::ui) fn update_article_list<R>(
+        &self,
+        cx: &mut Context<Self>,
+        update: impl FnOnce(&mut ArticleList, &mut Context<ArticleList>) -> R,
+    ) -> R {
+        self.list.update(cx, |list, list_cx| {
+            let result = update(list, list_cx);
+            list_cx.notify();
+            result
+        })
+    }
+
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -66,9 +106,9 @@ impl ReaderWindow {
         provider_settings: ProviderSettingsMap,
         data_dir: PathBuf,
     ) -> Self {
-        let sidebar = Sidebar::new(data_dir.join("feed-icons"));
-        let list = ArticleList::new(window, cx, preferences.language);
-        let reader = ArticleView::default();
+        let sidebar = cx.new(|_| Sidebar::new(data_dir.join("feed-icons"), preferences.language));
+        let list = cx.new(|cx| ArticleList::new(window, cx, preferences.language));
+        let reader = cx.new(|_| ArticleView::new(preferences.clone(), translator_config.clone()));
         let settings = Settings::new(
             window,
             cx,
@@ -79,6 +119,7 @@ impl ReaderWindow {
         );
         let editor = FeedEditor::new(window, cx);
         let status = Status::default();
+        let status_view = cx.new(|_| StatusBar::default());
         let (update_events, mut update_receiver) = tokio::sync::mpsc::unbounded_channel();
         let update_status = std::fs::read_to_string(data_dir.join("update-failure.txt"))
             .map(UpdateStatus::Failed)
@@ -93,12 +134,14 @@ impl ReaderWindow {
             palette: PaletteState::new(window, cx),
 
             sidebar,
+            pane_subscriptions: Vec::new(),
             list,
             reader,
             settings,
             editor,
             quote_poster: None,
             status,
+            status_view,
             title_translation_usage: Vec::new(),
             data_dir: data_dir.clone(),
             update_status,
@@ -107,6 +150,86 @@ impl ReaderWindow {
             mark_revisions: HashMap::new(),
             next_mark_revision: 0,
         };
+        let sidebar_events = cx.subscribe(&view.sidebar, |this, _, event, cx| match event {
+            super::sidebar::SidebarEvent::SelectScope(scope) => {
+                this.select_scope(scope.clone(), cx)
+            }
+            super::sidebar::SidebarEvent::Refresh { force } => this.refresh_with_force(*force, cx),
+        });
+        view.pane_subscriptions.push(sidebar_events);
+        let sidebar_menu_events =
+            cx.subscribe_in(&view.sidebar, window, |this, _, event, window, cx| {
+                super::context_menus::handle_pane_menu_event(this, event, window, cx);
+            });
+        view.pane_subscriptions.push(sidebar_menu_events);
+        let list_events = cx.subscribe(&view.list, |this, _, event, cx| match event {
+            super::article_list::ArticleListEvent::SearchChanged => {
+                let revision = this.list.read(cx).search_revision;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(200))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if revision == this.list.read(cx).search_revision {
+                            this.load_snapshot(cx);
+                        }
+                    });
+                })
+                .detach();
+            }
+            super::article_list::ArticleListEvent::SelectArticle(id) => this.open_article(*id, cx),
+            super::article_list::ArticleListEvent::MarkAllRead => this.mark_all_read(cx),
+            super::article_list::ArticleListEvent::LoadMoreArticles => this.load_more_articles(cx),
+        });
+        view.pane_subscriptions.push(list_events);
+        let list_menu_events = cx.subscribe_in(&view.list, window, |this, _, event, window, cx| {
+            super::context_menus::handle_pane_menu_event(this, event, window, cx);
+        });
+        view.pane_subscriptions.push(list_menu_events);
+        let status_events = cx.subscribe(&view.status_view, |this, _, event, cx| match event {
+            super::status::StatusBarEvent::OpenAbout => {
+                this.settings.open = true;
+                this.settings.page = SettingsPage::About;
+                cx.notify();
+            }
+        });
+        view.pane_subscriptions.push(status_events);
+        let reader_events = cx.subscribe(&view.reader, |this, _, event, cx| match event {
+            super::article_view::ArticleViewEvent::Mark {
+                article_id,
+                field,
+                value,
+            } => this.mark(*article_id, *field, *value, cx),
+            super::article_view::ArticleViewEvent::ToggleHideImages => this.toggle_hide_images(cx),
+            super::article_view::ArticleViewEvent::ExtractFullText(article_id) => {
+                this.extract(*article_id, true, cx)
+            }
+            super::article_view::ArticleViewEvent::ToggleTranslation(article_id) => {
+                this.toggle_or_translate(*article_id, cx)
+            }
+            super::article_view::ArticleViewEvent::ToggleTranslationLayout => {
+                this.toggle_translation_layout(cx)
+            }
+            super::article_view::ArticleViewEvent::ShareArticle => this.share_article(cx),
+            super::article_view::ArticleViewEvent::SelectFeed(feed_id) => {
+                this.select_scope_preserving_article(Scope::Feed(*feed_id), cx)
+            }
+            super::article_view::ArticleViewEvent::SaveReadingProgress => {
+                this.schedule_reading_progress_save(cx)
+            }
+            super::article_view::ArticleViewEvent::OpenImage(index) => {
+                this.update_article_reader(cx, |reader| {
+                    reader.image_viewer_url = reader.image_urls.get(*index).cloned();
+                });
+                cx.notify();
+            }
+        });
+        view.pane_subscriptions.push(reader_events);
+        let reader_menu_events =
+            cx.subscribe_in(&view.reader, window, |this, _, event, window, cx| {
+                super::context_menus::handle_pane_menu_event(this, event, window, cx);
+            });
+        view.pane_subscriptions.push(reader_menu_events);
         view.subscribe_palette_input(window, cx);
         view.load_snapshot(cx);
         view.load_title_translation_usage(cx);
@@ -169,18 +292,74 @@ impl ReaderWindow {
 
 impl Render for ReaderWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_status_bar(cx);
         window.set_rem_size(px(self.preferences.ui_font_size));
+        let reader_presentation_matches = self
+            .reader
+            .read(cx)
+            .presentation_matches(&self.preferences, &self.translator_config);
+        if !reader_presentation_matches {
+            let preferences = self.preferences.clone();
+            let translator_config = self.translator_config.clone();
+            self.reader.update(cx, |reader, reader_cx| {
+                reader.preferences = preferences;
+                reader.translator_config = translator_config;
+                reader_cx.notify();
+            });
+        }
+        let sidebar_scope = self.list.read(cx).scope.clone();
+        let sidebar_language = self.preferences.language;
+        let sidebar_source = self.settings.library_source;
+        let sidebar_folder_order = self.preferences.folder_order.clone();
+        let sidebar_collapsed_folders = self.preferences.collapsed_folders.clone();
+        let sidebar_folder_icons = self.preferences.folder_icons.clone();
+        let sidebar_presentation_changed = {
+            let sidebar = self.sidebar.read(cx);
+            sidebar.selected_scope != sidebar_scope
+                || sidebar.language != sidebar_language
+                || sidebar.library_source != sidebar_source
+                || sidebar.folder_order != sidebar_folder_order
+                || sidebar.collapsed_folders != sidebar_collapsed_folders
+                || sidebar.folder_icons != sidebar_folder_icons
+        };
+        if sidebar_presentation_changed {
+            self.sidebar.update(cx, |sidebar, sidebar_cx| {
+                sidebar.selected_scope = sidebar_scope;
+                sidebar.language = sidebar_language;
+                sidebar.library_source = sidebar_source;
+                sidebar.folder_order = sidebar_folder_order;
+                sidebar.collapsed_folders = sidebar_collapsed_folders;
+                sidebar.folder_icons = sidebar_folder_icons;
+                sidebar_cx.notify();
+            });
+        }
         let body = if self.settings.open {
             self.settings.render_settings(self, cx).into_any_element()
         } else {
+            let target_language = self
+                .preferences
+                .translation_language
+                .translator_code()
+                .to_owned();
+            let list_presentation_changed = {
+                let list = self.list.read(cx);
+                list.language != self.preferences.language
+                    || list.target_language != target_language
+            };
+            if list_presentation_changed {
+                self.update_article_list(cx, |list, _| {
+                    list.language = self.preferences.language;
+                    list.target_language = target_language;
+                });
+            }
             h_flex()
                 .size_full()
                 .items_stretch()
                 .when(!self.preferences.sidebar_collapsed, |view| {
-                    view.child(self.sidebar.render_sidebar(self, cx))
+                    view.child(self.sidebar.clone())
                 })
-                .child(self.list.render_article_list(self, cx))
-                .child(self.reader.render_reader(self, cx))
+                .child(self.list.clone())
+                .child(self.reader.clone())
                 .into_any_element()
         };
         div()
@@ -262,7 +441,7 @@ impl Render for ReaderWindow {
                     .size_full()
                     .child(self.render_title_bar(window, cx))
                     .child(div().flex_1().min_h_0().child(body))
-                    .child(self.status.render_status_bar(self, cx)),
+                    .child(self.status_view.clone()),
             )
             .when(self.palette.open, |view| {
                 view.child(self.palette.render_palette(self, cx))
@@ -273,9 +452,10 @@ impl Render for ReaderWindow {
             .when(self.quote_poster.is_some(), |view| {
                 view.child(self.render_quote_poster(cx))
             })
-            .when_some(self.reader.image_viewer_url.clone(), |view, url| {
-                view.child(self.render_image_viewer(url, cx))
-            })
+            .when_some(
+                self.reader.read(cx).image_viewer_url.clone(),
+                |view, url| view.child(self.render_image_viewer(url, cx)),
+            )
     }
 }
 
@@ -297,7 +477,10 @@ impl ReaderWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    this.reader.image_viewer_url = None;
+                    this.reader.update(cx, |reader, cx| {
+                        reader.image_viewer_url = None;
+                        cx.notify();
+                    });
                     cx.notify();
                 }),
             )
@@ -319,7 +502,10 @@ impl ReaderWindow {
                             .icon(bundled_icon(BundledIcon::Close))
                             .tooltip(self.t("Close"))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.reader.image_viewer_url = None;
+                                this.reader.update(cx, |reader, cx| {
+                                    reader.image_viewer_url = None;
+                                    cx.notify();
+                                });
                                 cx.notify();
                             })),
                     ),

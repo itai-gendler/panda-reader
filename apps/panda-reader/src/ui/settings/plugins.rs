@@ -109,7 +109,9 @@ impl Settings {
                             this.settings.plugin_list_loading = false;
                         }
                         if refresh_open_article {
-                            this.reader.showing_translation = false;
+                            this.update_article_reader(cx, |reader| {
+                                reader.showing_translation = false
+                            });
                             this.request_prepared_body(cx);
                             this.settings.check_community_plugins(cx);
                         }

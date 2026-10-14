@@ -68,6 +68,7 @@ impl ReaderWindow {
     ) {
         let Some(feed) = self
             .sidebar
+            .read(cx)
             .feeds
             .iter()
             .find(|feed| feed.id == id)

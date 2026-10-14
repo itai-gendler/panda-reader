@@ -11,6 +11,7 @@ impl ReaderWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let article = self.read_article_reader(cx, |reader| reader.article.clone());
         match kind {
             CommandKind::TogglePalette => self.toggle_palette(window, cx),
             CommandKind::NextArticle => self.move_article(1, false, cx),
@@ -22,42 +23,41 @@ impl ReaderWindow {
             CommandKind::GoStarred => self.select_scope(Scope::Starred, cx),
             CommandKind::GoLater => self.select_scope(Scope::Later, cx),
             CommandKind::ToggleRead => {
-                if let Some(article) = self.reader.article.as_ref() {
+                if let Some(article) = article.as_ref() {
                     let id = article.summary.id;
                     let value = !article.summary.is_read;
                     self.mark(id, MarkField::Read, value, cx);
                 }
             }
             CommandKind::ToggleStar => {
-                if let Some(article) = self.reader.article.as_ref() {
+                if let Some(article) = article.as_ref() {
                     let id = article.summary.id;
                     let value = !article.summary.is_starred;
                     self.mark(id, MarkField::Starred, value, cx);
                 }
             }
             CommandKind::ToggleLater => {
-                if let Some(article) = self.reader.article.as_ref() {
+                if let Some(article) = article.as_ref() {
                     let id = article.summary.id;
                     let value = !article.summary.read_later;
                     self.mark(id, MarkField::Later, value, cx);
                 }
             }
             CommandKind::ExtractFullText => {
-                if let Some(article) = self.reader.article.as_ref() {
+                if let Some(article) = article.as_ref() {
                     self.extract(article.summary.id, true, cx);
                 }
             }
             CommandKind::Translate => {
-                if let Some(article) = self.reader.article.as_ref() {
+                if let Some(article) = article.as_ref() {
                     self.toggle_or_translate(article.summary.id, cx);
                 }
             }
             CommandKind::ToggleHideImages => self.toggle_hide_images(cx),
             CommandKind::ToggleTranslationLayout => self.toggle_translation_layout(cx),
             CommandKind::OpenOriginal => {
-                if let Some(url) = self
-                    .reader
-                    .article
+                if let Some(url) = article
+                    .as_ref()
                     .as_ref()
                     .and_then(|article| article.url.clone())
                 {
@@ -65,9 +65,8 @@ impl ReaderWindow {
                 }
             }
             CommandKind::CopyLink => {
-                if let Some(url) = self
-                    .reader
-                    .article
+                if let Some(url) = article
+                    .as_ref()
                     .as_ref()
                     .and_then(|article| article.url.clone())
                 {
@@ -76,24 +75,14 @@ impl ReaderWindow {
                 }
             }
             CommandKind::CopyTitle => {
-                if let Some(title) = self
-                    .reader
-                    .article
-                    .as_ref()
-                    .map(|a| a.summary.title.clone())
-                {
+                if let Some(title) = article.as_ref().as_ref().map(|a| a.summary.title.clone()) {
                     cx.write_to_clipboard(ClipboardItem::new_string(title));
                     self.set_flash(self.t("Title copied"), cx);
                 }
             }
             CommandKind::Refresh => self.refresh(cx),
             CommandKind::ForceRefreshArticle => {
-                if let Some(id) = self
-                    .reader
-                    .article
-                    .as_ref()
-                    .map(|article| article.summary.id)
-                {
+                if let Some(id) = article.as_ref().as_ref().map(|article| article.summary.id) {
                     self.extract(id, true, cx);
                 } else {
                     self.set_flash(self.t("Select an article first"), cx);
@@ -140,12 +129,8 @@ impl ReaderWindow {
             }
             CommandKind::FocusSearch => {
                 self.settings.open = false;
-                let _ = self
-                    .list
-                    .search_input
-                    .read(cx)
-                    .focus_handle(cx)
-                    .focus(window, cx);
+                let search_input = self.list.read(cx).search_input.clone();
+                let _ = search_input.read(cx).focus_handle(cx).focus(window, cx);
                 cx.notify();
             }
             CommandKind::ShowKeyboardShortcuts => {
@@ -158,8 +143,9 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn typing_in_input(&self, window: &Window, cx: &App) -> bool {
+        let search_input = self.list.read(cx).search_input.clone();
         [
-            &self.list.search_input,
+            &search_input,
             &self.settings.add_input,
             &self.settings.provider_url_input,
             &self.settings.provider_username_input,
@@ -195,7 +181,7 @@ impl ReaderWindow {
             && !self.settings.open
             && self.editor.feed_id.is_none()
             && self.quote_poster.is_none()
-            && self.reader.image_viewer_url.is_none()
+            && self.read_article_reader(cx, |reader| reader.image_viewer_url.is_none())
             && !self.typing_in_input(window, cx)
     }
 

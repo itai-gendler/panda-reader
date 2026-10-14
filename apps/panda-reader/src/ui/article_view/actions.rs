@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 
 impl ReaderWindow {
     pub(in crate::ui) fn share_article(&mut self, cx: &mut Context<Self>) {
-        let Some(article) = self.reader.article.as_ref() else {
+        let Some(article) = self.read_article_reader(cx, |reader| reader.article.clone()) else {
             return;
         };
         let Some(url) = article.url.as_deref().or(article.summary.url.as_deref()) else {
@@ -31,27 +31,35 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn open_article(&mut self, id: i64, cx: &mut Context<Self>) {
-        self.save_current_reading_progress();
-        self.reader.translation_epoch.next();
-        if let Some(translating_id) = self.reader.translating_article_id.take() {
+        self.save_current_reading_progress(cx);
+        let (translating_id, previous_id, revision) = self.update_article_reader(cx, |reader| {
+            reader.translation_epoch.next();
+            let translating_id = reader.translating_article_id.take();
+            let previous_id = reader.requested_article_id;
+            reader.requested_article_id = Some(id);
+            let revision = reader.request_epoch.next();
+            reader.progress_epoch = reader.progress_epoch.wrapping_add(1);
+            reader.restore_progress = None;
+            reader.image_viewer_url = None;
+            reader.image_urls.clear();
+            reader.scroll.set_offset(point(px(0.), px(0.)));
+            reader.is_extracting = false;
+            reader.translating_article_id = None;
+            reader.translation_incomplete = false;
+            reader.showing_translation = false;
+            reader.body_html = SharedString::default();
+            reader.body_markdown = SharedString::default();
+            (translating_id, previous_id, revision)
+        });
+        if let Some(translating_id) = translating_id {
             self.services.cancel_article_work(translating_id);
             self.clear_status();
         }
-        if let Some(previous_id) = self.reader.requested_article_id
+        if let Some(previous_id) = previous_id
             && previous_id != id
         {
             self.services.cancel_article_work(previous_id);
         }
-        self.reader.requested_article_id = Some(id);
-        let revision = self.reader.request_epoch.next();
-        self.reader.progress_epoch = self.reader.progress_epoch.wrapping_add(1);
-        self.reader.restore_progress = None;
-        self.reader.image_viewer_url = None;
-        self.reader.image_urls.clear();
-        self.reader.scroll.set_offset(point(px(0.), px(0.)));
-        self.reader.is_extracting = false;
-        self.reader.translating_article_id = None;
-        self.reader.translation_incomplete = false;
         let (reply, response) = oneshot::channel();
         self.services.send(Command::Article {
             id,
@@ -63,49 +71,60 @@ impl ReaderWindow {
         });
         let services = self.services.clone();
         // Optimistic list update — avoid a full snapshot round-trip.
-        if let Some(summary) = Arc::make_mut(&mut self.list.articles)
-            .iter_mut()
-            .find(|article| article.id == id)
-        {
-            if !summary.is_read {
-                summary.is_read = true;
-                if let Some(feed) = self
-                    .sidebar
-                    .feeds
-                    .iter_mut()
-                    .find(|feed| feed.id == summary.feed_id)
-                {
+        let newly_read_feed = self.update_article_list(cx, |list, _| {
+            list.selected_article = Some(id);
+            if let Some(summary) = Arc::make_mut(&mut list.articles)
+                .iter_mut()
+                .find(|article| article.id == id)
+            {
+                if !summary.is_read {
+                    summary.is_read = true;
+                    Some(summary.feed_id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+        if let Some(feed_id) = newly_read_feed {
+            self.sidebar.update(cx, |sidebar, cx| {
+                if let Some(feed) = sidebar.feeds.iter_mut().find(|feed| feed.id == feed_id) {
                     feed.unread = feed.unread.saturating_sub(1);
                 }
-            }
+                cx.notify();
+            });
         }
-        self.reader.showing_translation = false;
-        self.reader.body_html = SharedString::default();
-        self.reader.body_markdown = SharedString::default();
-        cx.notify();
+        self.sync_status_bar(cx);
         cx.spawn(async move |this, cx| {
             let result = response
                 .await
                 .unwrap_or_else(|_| Err("Background service stopped".to_string()));
             let _ = this.update(cx, |this, cx| {
-                if !this.reader.request_epoch.is_current(revision) {
+                if !this.read_article_reader(cx, |reader| reader.request_epoch.is_current(revision))
+                {
                     return;
                 }
+                let needs_status_refresh = result.is_err();
                 match result {
                     Ok(prepared) => {
                         let reading_progress = prepared.reading_progress;
                         let mut article = prepared.article;
                         article.summary.is_read = true;
-                        this.reader.showing_translation = false;
-                        this.reader.body_html = prepared.body_html.into();
-                        this.reader.body_markdown = prepared.body_markdown.into();
-                        this.reader.image_urls = prepared.image_urls.to_vec();
                         let should_auto_extract = this.preferences.auto_extract_full_text
                             && article.extracted_html.is_none()
                             && article.url.is_some();
-                        this.reader.article = Some(article);
+                        this.update_article_reader(cx, |reader| {
+                            reader.showing_translation = false;
+                            reader.body_html = prepared.body_html.into();
+                            reader.body_markdown = prepared.body_markdown.into();
+                            reader.image_urls = prepared.image_urls.to_vec();
+                            reader.article = Some(article);
+                        });
                         if this.preferences.remember_reading_position && reading_progress > 0. {
-                            this.reader.restore_progress = Some(reading_progress);
+                            this.update_article_reader(cx, |reader| {
+                                reader.restore_progress = Some(reading_progress)
+                            });
                             this.restore_reading_progress(id, reading_progress, cx);
                         }
                         let (reply, _) = oneshot::channel();
@@ -121,56 +140,68 @@ impl ReaderWindow {
                     }
                     Err(error) => this.set_error(error),
                 }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    pub(in crate::ui) fn schedule_reading_progress_save(&mut self, cx: &mut Context<Self>) {
-        if !self.preferences.remember_reading_position || self.reader.article.is_none() {
-            return;
-        }
-        self.reader.progress_epoch = self.reader.progress_epoch.wrapping_add(1);
-        let epoch = self.reader.progress_epoch;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(700))
-                .await;
-            let _ = this.update(cx, |this, _| {
-                if this.reader.progress_epoch == epoch {
-                    this.save_current_reading_progress();
+                if needs_status_refresh {
+                    this.sync_status_bar(cx);
                 }
             });
         })
         .detach();
     }
 
-    fn save_current_reading_progress(&self) {
+    pub(in crate::ui) fn schedule_reading_progress_save(&mut self, cx: &mut Context<Self>) {
+        if !self.preferences.remember_reading_position
+            || !self.read_article_reader(cx, |reader| reader.article.is_some())
+        {
+            return;
+        }
+        let epoch = self.update_article_reader(cx, |reader| {
+            reader.progress_epoch = reader.progress_epoch.wrapping_add(1);
+            reader.progress_epoch
+        });
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(700))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.read_article_reader(cx, |reader| reader.progress_epoch == epoch) {
+                    this.save_current_reading_progress(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn save_current_reading_progress(&self, cx: &App) {
         if !self.preferences.remember_reading_position {
             return;
         }
-        let Some(article) = &self.reader.article else {
+        let Some((id, scroll)) = self.read_article_reader(cx, |reader| {
+            reader
+                .article
+                .as_ref()
+                .map(|article| (article.summary.id, reader.scroll.clone()))
+        }) else {
             return;
         };
-        let max = self.reader.scroll.max_offset().y;
+        let max = scroll.max_offset().y;
         if max <= px(0.) {
             return;
         }
-        let progress = (-self.reader.scroll.offset().y / max).clamp(0., 1.);
+        let progress = (-scroll.offset().y / max).clamp(0., 1.);
         let (reply, _response) = oneshot::channel();
         self.services
             .send(crate::services::Command::SaveReadingProgress {
-                id: article.summary.id,
+                id,
                 progress,
                 reply,
             });
     }
 
     fn restore_reading_progress(&mut self, id: i64, progress: f32, cx: &mut Context<Self>) {
-        self.reader.progress_epoch = self.reader.progress_epoch.wrapping_add(1);
-        let epoch = self.reader.progress_epoch;
-        let scroll = self.reader.scroll.clone();
+        let (epoch, scroll) = self.update_article_reader(cx, |reader| {
+            reader.progress_epoch = reader.progress_epoch.wrapping_add(1);
+            (reader.progress_epoch, reader.scroll.clone())
+        });
         cx.spawn(async move |this, cx| {
             for _ in 0..20 {
                 cx.background_executor()
@@ -178,19 +209,19 @@ impl ReaderWindow {
                     .await;
                 let restored = this
                     .update(cx, |this, cx| {
-                        if this.reader.progress_epoch != epoch
-                            || this
-                                .reader
-                                .article
-                                .as_ref()
-                                .is_none_or(|article| article.summary.id != id)
-                        {
+                        if !this.read_article_reader(cx, |reader| {
+                            reader.progress_epoch == epoch
+                                && reader
+                                    .article
+                                    .as_ref()
+                                    .is_some_and(|article| article.summary.id == id)
+                        }) {
                             return true;
                         }
                         let max = scroll.max_offset().y;
                         if max > px(0.) {
                             scroll.set_offset(point(px(0.), -max * progress));
-                            this.reader.restore_progress = None;
+                            this.update_article_reader(cx, |reader| reader.restore_progress = None);
                             cx.notify();
                             true
                         } else {
@@ -207,15 +238,20 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn request_prepared_body(&mut self, cx: &mut Context<Self>) {
-        let Some(article) = &self.reader.article else {
+        let Some((article, show_translation)) = self.read_article_reader(cx, |reader| {
+            reader
+                .article
+                .clone()
+                .map(|article| (article, reader.showing_translation))
+        }) else {
             return;
         };
         let id = article.summary.id;
-        let revision = self.reader.request_epoch.next();
+        let revision = self.update_article_reader(cx, |reader| reader.request_epoch.next());
         let (reply, response) = oneshot::channel();
         self.services.send(Command::Article {
             id,
-            show_translation: self.reader.showing_translation,
+            show_translation,
             translation_layout: self.preferences.translation_layout,
             hide_images: self.preferences.hide_images,
             paragraph_indent: self.preferences.paragraph_indent,
@@ -226,15 +262,18 @@ impl ReaderWindow {
                 .await
                 .unwrap_or_else(|_| Err("Background service stopped".to_string()));
             let _ = this.update(cx, |this, cx| {
-                if !this.reader.request_epoch.is_current(revision) {
+                if !this.read_article_reader(cx, |reader| reader.request_epoch.is_current(revision))
+                {
                     return;
                 }
                 match result {
                     Ok(prepared) => {
-                        this.reader.article = Some(prepared.article);
-                        this.reader.body_html = prepared.body_html.into();
-                        this.reader.body_markdown = prepared.body_markdown.into();
-                        this.reader.image_urls = prepared.image_urls.to_vec();
+                        this.update_article_reader(cx, |reader| {
+                            reader.article = Some(prepared.article);
+                            reader.body_html = prepared.body_html.into();
+                            reader.body_markdown = prepared.body_markdown.into();
+                            reader.image_urls = prepared.image_urls.to_vec();
+                        });
                     }
                     Err(error) => this.set_error(error),
                 }
@@ -252,13 +291,16 @@ impl ReaderWindow {
         cx: &mut Context<Self>,
     ) {
         let current = self
-            .reader
-            .article
-            .as_ref()
-            .filter(|article| article.summary.id == id)
-            .map(|article| (article.summary.feed_id, article.summary.is_read))
+            .read_article_reader(cx, |reader| {
+                reader
+                    .article
+                    .as_ref()
+                    .filter(|article| article.summary.id == id)
+                    .map(|article| (article.summary.feed_id, article.summary.is_read))
+            })
             .or_else(|| {
                 self.list
+                    .read(cx)
                     .articles
                     .iter()
                     .find(|article| article.id == id)
@@ -269,41 +311,46 @@ impl ReaderWindow {
         self.next_mark_revision = self.next_mark_revision.wrapping_add(1);
         let mark_revision = self.next_mark_revision;
         self.mark_revisions.insert((id, field), mark_revision);
+        let scope = self.list.read(cx).scope.clone();
         let remove_from_scope = matches!(
-            (&self.list.scope, field, value),
+            (&scope, field, value),
             (Scope::Unread, MarkField::Read, true)
                 | (Scope::Starred, MarkField::Starred, false)
                 | (Scope::Later, MarkField::Later, false)
         );
-        if let Some(article) = &mut self.reader.article {
-            if article.summary.id == id {
-                match field {
-                    MarkField::Read => article.summary.is_read = value,
-                    MarkField::Starred => article.summary.is_starred = value,
-                    MarkField::Later => article.summary.read_later = value,
+        self.update_article_reader(cx, |reader| {
+            if let Some(article) = &mut reader.article {
+                if article.summary.id == id {
+                    match field {
+                        MarkField::Read => article.summary.is_read = value,
+                        MarkField::Starred => article.summary.is_starred = value,
+                        MarkField::Later => article.summary.read_later = value,
+                    }
                 }
             }
-        }
-        if let Some(summary) = Arc::make_mut(&mut self.list.articles)
-            .iter_mut()
-            .find(|article| article.id == id)
-        {
-            match field {
-                MarkField::Read => summary.is_read = value,
-                MarkField::Starred => summary.is_starred = value,
-                MarkField::Later => summary.read_later = value,
+        });
+        self.update_article_list(cx, |list, _| {
+            if let Some(summary) = Arc::make_mut(&mut list.articles)
+                .iter_mut()
+                .find(|article| article.id == id)
+            {
+                match field {
+                    MarkField::Read => summary.is_read = value,
+                    MarkField::Starred => summary.is_starred = value,
+                    MarkField::Later => summary.read_later = value,
+                }
             }
-        }
+        });
         if field == MarkField::Read
             && old_read != value
             && let Some(feed_id) = feed_id
-            && let Some(feed) = self
-                .sidebar
-                .feeds
-                .iter_mut()
-                .find(|feed| feed.id == feed_id)
         {
-            feed.unread = (feed.unread + if value { -1 } else { 1 }).max(0);
+            self.sidebar.update(cx, |sidebar, cx| {
+                if let Some(feed) = sidebar.feeds.iter_mut().find(|feed| feed.id == feed_id) {
+                    feed.unread = (feed.unread + if value { -1 } else { 1 }).max(0);
+                }
+                cx.notify();
+            });
         }
         cx.notify();
 
@@ -323,39 +370,47 @@ impl ReaderWindow {
                     return;
                 }
                 if let Err(error) = result {
-                    if let Some(article) = &mut this.reader.article {
-                        if article.summary.id == id {
-                            match field {
-                                MarkField::Read => article.summary.is_read = !value,
-                                MarkField::Starred => article.summary.is_starred = !value,
-                                MarkField::Later => article.summary.read_later = !value,
+                    this.update_article_reader(cx, |reader| {
+                        if let Some(article) = &mut reader.article {
+                            if article.summary.id == id {
+                                match field {
+                                    MarkField::Read => article.summary.is_read = !value,
+                                    MarkField::Starred => article.summary.is_starred = !value,
+                                    MarkField::Later => article.summary.read_later = !value,
+                                }
                             }
                         }
-                    }
-                    if let Some(summary) = Arc::make_mut(&mut this.list.articles)
-                        .iter_mut()
-                        .find(|article| article.id == id)
-                    {
-                        match field {
-                            MarkField::Read => summary.is_read = !value,
-                            MarkField::Starred => summary.is_starred = !value,
-                            MarkField::Later => summary.read_later = !value,
+                    });
+                    this.update_article_list(cx, |list, _| {
+                        if let Some(summary) = Arc::make_mut(&mut list.articles)
+                            .iter_mut()
+                            .find(|article| article.id == id)
+                        {
+                            match field {
+                                MarkField::Read => summary.is_read = !value,
+                                MarkField::Starred => summary.is_starred = !value,
+                                MarkField::Later => summary.read_later = !value,
+                            }
                         }
-                    }
+                    });
                     if field == MarkField::Read
                         && old_read != value
                         && let Some(feed_id) = feed_id
-                        && let Some(feed) = this
-                            .sidebar
-                            .feeds
-                            .iter_mut()
-                            .find(|feed| feed.id == feed_id)
                     {
-                        feed.unread = (feed.unread + if old_read { 1 } else { -1 }).max(0);
+                        this.sidebar.update(cx, |sidebar, cx| {
+                            if let Some(feed) =
+                                sidebar.feeds.iter_mut().find(|feed| feed.id == feed_id)
+                            {
+                                feed.unread = (feed.unread + if old_read { 1 } else { -1 }).max(0);
+                            }
+                            cx.notify();
+                        });
                     }
                     this.set_error(error);
                 } else if remove_from_scope {
-                    Arc::make_mut(&mut this.list.articles).retain(|article| article.id != id);
+                    this.update_article_list(cx, |list, _| {
+                        Arc::make_mut(&mut list.articles).retain(|article| article.id != id);
+                    });
                     this.load_snapshot(cx);
                 }
                 if this.mark_revisions.get(&(id, field)) == Some(&mark_revision) {
@@ -368,34 +423,41 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn extract(&mut self, id: i64, force: bool, cx: &mut Context<Self>) {
-        if self.reader.is_extracting {
+        let (is_extracting, has_full_text, show_translation) =
+            self.read_article_reader(cx, |reader| {
+                (
+                    reader.is_extracting,
+                    reader.article.as_ref().is_some_and(|article| {
+                        article.summary.id == id
+                            && article
+                                .extracted_html
+                                .as_deref()
+                                .is_some_and(|html| !html.trim().is_empty())
+                    }),
+                    reader.showing_translation,
+                )
+            });
+        if is_extracting {
             return;
         }
-        if !force
-            && self.reader.article.as_ref().is_some_and(|article| {
-                article.summary.id == id
-                    && article
-                        .extracted_html
-                        .as_deref()
-                        .is_some_and(|html| !html.trim().is_empty())
-            })
-        {
+        if !force && has_full_text {
             return;
         }
         let (reply, response) = oneshot::channel();
         let extractor = self.preferences.content_extractor;
-        let show_translation = self.reader.showing_translation;
         let translation_layout = self.preferences.translation_layout;
         let hide_images = self.preferences.hide_images;
         let paragraph_indent = self.preferences.paragraph_indent;
-        let revision = self.reader.request_epoch.next();
+        let revision = self.update_article_reader(cx, |reader| {
+            reader.is_extracting = true;
+            reader.request_epoch.next()
+        });
         self.services.send(Command::Extract {
             id,
             force,
             extractor,
             reply,
         });
-        self.reader.is_extracting = true;
         self.set_busy(self.t("Extracting full text…"));
         cx.notify();
         let (article_reply, article_response) = oneshot::channel();
@@ -415,27 +477,30 @@ impl ReaderWindow {
                 });
             }
             let _ = this.update(cx, |this, cx| {
-                if !this.reader.request_epoch.is_current(revision) {
+                if !this.read_article_reader(cx, |reader| reader.request_epoch.is_current(revision))
+                {
                     return;
                 }
-                this.reader.is_extracting = false;
+                this.update_article_reader(cx, |reader| reader.is_extracting = false);
                 match result {
                     Ok(()) => {
                         this.set_flash(this.t("Full text extracted"), cx);
                         cx.spawn(async move |this, cx| {
                             if let Ok(Ok(prepared)) = article_response.await {
                                 let _ = this.update(cx, |this, cx| {
-                                    if this.reader.request_epoch.is_current(revision)
-                                        && this
-                                            .reader
-                                            .article
-                                            .as_ref()
-                                            .is_some_and(|current| current.summary.id == id)
-                                    {
-                                        this.reader.body_html = prepared.body_html.into();
-                                        this.reader.body_markdown = prepared.body_markdown.into();
-                                        this.reader.image_urls = prepared.image_urls.to_vec();
-                                        this.reader.article = Some(prepared.article);
+                                    if this.read_article_reader(cx, |reader| {
+                                        reader.request_epoch.is_current(revision)
+                                            && reader
+                                                .article
+                                                .as_ref()
+                                                .is_some_and(|current| current.summary.id == id)
+                                    }) {
+                                        this.update_article_reader(cx, |reader| {
+                                            reader.body_html = prepared.body_html.into();
+                                            reader.body_markdown = prepared.body_markdown.into();
+                                            reader.image_urls = prepared.image_urls.to_vec();
+                                            reader.article = Some(prepared.article);
+                                        });
                                         cx.notify();
                                     }
                                 });
@@ -452,33 +517,39 @@ impl ReaderWindow {
     }
 
     pub(in crate::ui) fn toggle_or_translate(&mut self, id: i64, cx: &mut Context<Self>) {
-        if self.reader.translating_article_id == Some(id) {
+        let translating =
+            self.read_article_reader(cx, |reader| reader.translating_article_id == Some(id));
+        if translating {
             self.services.cancel_article_work(id);
-            self.reader.translation_epoch.next();
-            self.reader.translating_article_id = None;
-            self.reader.translation_incomplete = true;
+            self.update_article_reader(cx, |reader| {
+                reader.translation_epoch.next();
+                reader.translating_article_id = None;
+                reader.translation_incomplete = true;
+            });
             self.clear_status();
             self.set_flash(self.t("Translation cancelled"), cx);
             cx.notify();
             return;
         }
-        let Some(article) = self.reader.article.as_ref() else {
+        let Some(article) = self.read_article_reader(cx, |reader| reader.article.clone()) else {
             return;
         };
         if article.summary.id != id {
             return;
         }
-        if self.reader.showing_translation {
-            self.reader.showing_translation = false;
+        if self.read_article_reader(cx, |reader| reader.showing_translation) {
+            self.update_article_reader(cx, |reader| reader.showing_translation = false);
             self.request_prepared_body(cx);
             return;
         }
-        if self.reader.has_translation_for_ui(
-            article,
-            &self.preferences,
-            &self.translator_config.revision_cache_id(),
-        ) {
-            self.reader.showing_translation = true;
+        if self.read_article_reader(cx, |reader| {
+            reader.has_translation_for_ui(
+                &article,
+                &self.preferences,
+                &self.translator_config.revision_cache_id(),
+            )
+        }) {
+            self.update_article_reader(cx, |reader| reader.showing_translation = true);
             self.request_prepared_body(cx);
             return;
         }
@@ -498,11 +569,14 @@ impl ReaderWindow {
         let translation_layout = self.preferences.translation_layout;
         let hide_images = self.preferences.hide_images;
         let paragraph_indent = self.preferences.paragraph_indent;
-        self.reader.request_epoch.next();
-        let revision = self.reader.translation_epoch.next();
-        self.reader.translating_article_id = Some(id);
-        self.reader.translation_spinner_frame = 0;
-        self.reader.translation_incomplete = true;
+        let revision = self.update_article_reader(cx, |reader| {
+            reader.request_epoch.next();
+            let revision = reader.translation_epoch.next();
+            reader.translating_article_id = Some(id);
+            reader.translation_spinner_frame = 0;
+            reader.translation_incomplete = true;
+            revision
+        });
         let translation_started = std::time::Instant::now();
         let (progress, mut progress_receiver) = tokio::sync::mpsc::unbounded_channel();
         let (reply, response) = oneshot::channel();
@@ -535,73 +609,84 @@ impl ReaderWindow {
                             prepared = newer;
                         }
                         let _ = this.update(cx, |this, cx| {
-                            if !this.reader.translation_epoch.is_current(revision)
-                                || !this.reader.article.as_ref().is_some_and(|article| article.summary.id == id)
+                            if !this.read_article_reader(cx, |reader| {
+                                reader.translation_epoch.is_current(revision)
+                                    && reader.article.as_ref().is_some_and(|article| article.summary.id == id)
+                            })
                                 || this.preferences.translation_layout != translation_layout
                                 || this.preferences.hide_images != hide_images
                                 || this.preferences.paragraph_indent != paragraph_indent
                             {
                                 return;
                             }
-                            this.reader.showing_translation = true;
-                            this.reader.translation_incomplete = true;
-                            this.reader.body_html = prepared.body_html.into();
-                            this.reader.body_markdown = prepared.body_markdown.into();
-                            this.reader.image_urls = prepared.image_urls.to_vec();
-                            this.reader.article = Some(prepared.article);
-                            cx.notify();
+                            this.update_article_reader(cx, |reader| {
+                                reader.showing_translation = true;
+                                reader.translation_incomplete = true;
+                                reader.body_html = prepared.body_html.into();
+                                reader.body_markdown = prepared.body_markdown.into();
+                                reader.image_urls = prepared.image_urls.to_vec();
+                                reader.article = Some(prepared.article);
+                            });
                         });
                     }
                     _ = animation_tick => {
                         let _ = this.update(cx, |this, cx| {
-                            if this.reader.translation_epoch.is_current(revision)
-                                && this.reader.translating_article_id == Some(id)
-                            {
-                                this.reader.translation_spinner_frame =
-                                    this.reader.translation_spinner_frame.wrapping_add(1);
-                                cx.notify();
+                            if this.read_article_reader(cx, |reader| {
+                                reader.translation_epoch.is_current(revision)
+                                    && reader.translating_article_id == Some(id)
+                            }) {
+                                this.update_article_reader(cx, |reader| {
+                                    reader.translation_spinner_frame =
+                                        reader.translation_spinner_frame.wrapping_add(1);
+                                });
                             }
                         });
                     }
                 }
             };
             let _ = this.update(cx, |this, cx| {
-                if !this.reader.translation_epoch.is_current(revision) {
+                if !this.read_article_reader(cx, |reader| reader.translation_epoch.is_current(revision)) {
                     return;
                 }
-                this.reader.translating_article_id = None;
+                this.update_article_reader(cx, |reader| reader.translating_article_id = None);
                 this.clear_status();
                 match result {
                     Ok(prepared) => {
-                        this.reader.translation_incomplete = false;
-                        this.reader.request_epoch.next();
-                        if this
-                            .reader
-                            .article
-                            .as_ref()
-                            .is_some_and(|current| current.summary.id == id)
-                        {
-                            this.reader.showing_translation = true;
-                            this.reader.body_html = prepared.body_html.into();
-                            this.reader.body_markdown = prepared.body_markdown.into();
-                            this.reader.image_urls = prepared.image_urls.to_vec();
-                            if let Some(row) = Arc::make_mut(&mut this.list.articles)
-                                .iter_mut()
-                                .find(|row| {
-                                    row.id == id && row.title == prepared.article.summary.title
-                                })
-                            {
-                                row.auto_translated_title =
-                                    prepared.article.summary.auto_translated_title.clone();
-                                row.auto_translated_title_lang =
-                                    prepared.article.summary.auto_translated_title_lang.clone();
-                                row.auto_translated_title_source_hash = prepared
-                                    .article
-                                    .summary
-                                    .auto_translated_title_source_hash
-                                    .clone();
-                            }
-                            this.reader.article = Some(prepared.article);
+                        let is_current = this.read_article_reader(cx, |reader| {
+                            reader.article.as_ref().is_some_and(|current| current.summary.id == id)
+                        });
+                        this.update_article_reader(cx, |reader| {
+                            reader.translation_incomplete = false;
+                            reader.request_epoch.next();
+                        });
+                        if is_current {
+                            this.update_article_reader(cx, |reader| {
+                                reader.showing_translation = true;
+                                reader.body_html = prepared.body_html.clone().into();
+                                reader.body_markdown = prepared.body_markdown.clone().into();
+                                reader.image_urls = prepared.image_urls.to_vec();
+                            });
+                            this.update_article_list(cx, |list, _| {
+                                if let Some(row) = Arc::make_mut(&mut list.articles)
+                                    .iter_mut()
+                                    .find(|row| {
+                                        row.id == id && row.title == prepared.article.summary.title
+                                    })
+                                {
+                                    row.auto_translated_title =
+                                        prepared.article.summary.auto_translated_title.clone();
+                                    row.auto_translated_title_lang =
+                                        prepared.article.summary.auto_translated_title_lang.clone();
+                                    row.auto_translated_title_source_hash = prepared
+                                        .article
+                                        .summary
+                                        .auto_translated_title_source_hash
+                                        .clone();
+                                }
+                            });
+                            this.update_article_reader(cx, |reader| {
+                                reader.article = Some(prepared.article);
+                            });
                             let elapsed = format!(
                                 "{:.2} s",
                                 translation_started.elapsed().as_secs_f64()
@@ -633,7 +718,7 @@ impl ReaderWindow {
     pub(in crate::ui) fn toggle_hide_images(&mut self, cx: &mut Context<Self>) {
         self.preferences.hide_images = !self.preferences.hide_images;
         self.save_preferences();
-        if self.reader.article.is_some() {
+        if self.read_article_reader(cx, |reader| reader.article.is_some()) {
             self.request_prepared_body(cx);
         }
         cx.notify();
@@ -645,7 +730,7 @@ impl ReaderWindow {
             TranslationLayout::Replaced => TranslationLayout::Immersive,
         };
         self.save_preferences();
-        if self.reader.article.is_some() {
+        if self.read_article_reader(cx, |reader| reader.article.is_some()) {
             self.request_prepared_body(cx);
         }
         cx.notify();
@@ -659,9 +744,10 @@ impl ReaderWindow {
 impl ReaderWindow {
     pub(in crate::ui) fn mark_all_read(&mut self, cx: &mut Context<Self>) {
         let (reply, response) = oneshot::channel();
+        let list = self.list.read(cx);
         self.services.send(Command::MarkAllRead {
-            scope: self.list.scope.clone(),
-            search: self.list.search.clone(),
+            scope: list.scope.clone(),
+            search: list.search.clone(),
             reply,
         });
         self.set_busy(self.t("Marking all as read…"));

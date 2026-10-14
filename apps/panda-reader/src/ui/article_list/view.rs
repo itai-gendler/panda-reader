@@ -1,6 +1,5 @@
 use crate::ui::components::text_input;
 use crate::ui::i18n;
-use crate::ui::window::ReaderWindow;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _,
@@ -15,117 +14,110 @@ use panda_core::Scope;
 
 use super::state::ArticleList;
 
-impl ArticleList {
-    pub(in crate::ui) fn render_article_list(
-        &self,
-        owner: &ReaderWindow,
-        cx: &mut Context<ReaderWindow>,
-    ) -> impl IntoElement {
+impl Render for ArticleList {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let list_entity = cx.entity().downgrade();
+        let menu_emit = super::super::context_menus::pane_menu_emitter(list_entity.clone());
+        let language = self.language;
         let section_title = match &self.scope {
-            Scope::All => owner.t("All Articles").to_string(),
-            Scope::Unread => owner.t("Unread").to_string(),
-            Scope::Starred => owner.t("Starred").to_string(),
-            Scope::Later => owner.t("Read Later").to_string(),
+            Scope::All => i18n::text(language, "All Articles").to_string(),
+            Scope::Unread => i18n::text(language, "Unread").to_string(),
+            Scope::Starred => i18n::text(language, "Starred").to_string(),
+            Scope::Later => i18n::text(language, "Read Later").to_string(),
             Scope::Folder(name) => name.clone(),
-            Scope::Feed(id) => owner
-                .sidebar
-                .feeds
-                .iter()
-                .find(|feed| feed.id == *id)
-                .map(|feed| feed.title.clone())
-                .unwrap_or_else(|| owner.t("Feed").into()),
+            Scope::Feed(id) => self
+                .feed_titles
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| i18n::text(language, "Feed").into()),
         };
-        let selected_article = owner
-            .reader
-            .article
-            .as_ref()
-            .map(|article| article.summary.id);
+        let selected_article = self.selected_article;
         let articles = self.articles.clone();
-        let view = cx.entity();
-        let language = owner.preferences.language;
-        let target_language = owner
-            .preferences
-            .translation_language
-            .translator_code()
-            .to_owned();
-        let mut list =
-            v_flex()
-                .w(px(340.))
-                .h_full()
-                .bg(cx.theme().colors.list)
-                .border_r_1()
-                .border_color(cx.theme().border)
-                .child(
-                    v_flex()
-                        .gap_3()
-                        .px_5()
-                        .pt_5()
-                        .pb_4()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .justify_between()
-                                .child(div().text_xl().font_semibold().child(section_title))
-                                .child(
-                                    h_flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .child(
-                                            Button::new("mark-all-read")
-                                                .small()
-                                                .ghost()
-                                                .tooltip(owner.t("Mark all as read"))
-                                                .label(owner.t("Read all"))
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.mark_all_read(cx)
-                                                })),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(i18n::format(
-                                                    owner.preferences.language,
-                                                    "{} articles",
-                                                    self.articles.len(),
-                                                )),
-                                        ),
-                                ),
-                        )
-                        .child(text_input(&self.search_input)),
-                );
+        let target_language = self.target_language.clone();
+        let mut list = v_flex()
+            .w(px(340.))
+            .h_full()
+            .bg(cx.theme().colors.list)
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .child(
+                v_flex()
+                    .gap_3()
+                    .px_5()
+                    .pt_5()
+                    .pb_4()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_xl().font_semibold().child(section_title))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        Button::new("mark-all-read")
+                                            .small()
+                                            .ghost()
+                                            .tooltip(i18n::text(language, "Mark all as read"))
+                                            .label(i18n::text(language, "Read all"))
+                                            .on_click({
+                                                let list_entity = list_entity.clone();
+                                                move |_, _, cx| {
+                                                    let _ = list_entity.update(cx, |_, cx| {
+                                                        cx.emit(
+                                                            super::ArticleListEvent::MarkAllRead,
+                                                        );
+                                                    });
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(i18n::format(
+                                                language,
+                                                "{} articles",
+                                                self.articles.len(),
+                                            )),
+                                    ),
+                            ),
+                    )
+                    .child(text_input(&self.search_input)),
+            );
         if self.is_loading {
             list = list.child(
                 div()
                     .p_5()
                     .text_color(cx.theme().muted_foreground)
-                    .child(owner.t("Loading articles…")),
+                    .child(i18n::text(language, "Loading articles…")),
             );
         } else if self.articles.is_empty() {
-            list =
-                list.child(
-                    v_flex()
-                        .items_center()
-                        .gap_2()
-                        .px_5()
-                        .py_12()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(div().text_2xl().child(IconName::Inbox))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_semibold()
-                                .child(owner.t("No articles yet")),
-                        )
-                        .child(div().text_xs().child(owner.t(
-                            "Connect the selected provider in Settings to see your articles here",
-                        ))),
-                );
+            list = list.child(
+                v_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_5()
+                    .py_12()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(div().text_2xl().child(IconName::Inbox))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .child(i18n::text(language, "No articles yet")),
+                    )
+                    .child(div().text_xs().child(i18n::text(
+                        language,
+                        "Connect the selected provider in Settings to see your articles here",
+                    ))),
+            );
         } else {
             let scroll = self.scroll.clone();
-            let can_load_more = owner.can_load_more();
+            let can_load_more = self.has_more;
             list = list.child(
                 div()
                     .relative()
@@ -139,13 +131,11 @@ impl ArticleList {
                             articles.len(),
                             move |range, window, cx| {
                                 if can_load_more && range.end + 4 >= articles.len() {
-                                    let owner = view.clone();
+                                    let list_entity = list_entity.clone();
                                     window
                                         .spawn(cx, async move |cx| {
-                                            let _ = owner.update(cx, |this, cx| {
-                                                if this.can_load_more() {
-                                                    this.load_more_articles(cx);
-                                                }
+                                            let _ = list_entity.update(cx, |_, cx| {
+                                                cx.emit(super::ArticleListEvent::LoadMoreArticles);
                                             });
                                         })
                                         .detach();
@@ -163,9 +153,9 @@ impl ArticleList {
                                                 )
                                             })
                                             .unwrap_or_default();
-                                        let owner = view.clone();
-                                        let menu_app = view.downgrade();
+                                        let menu_emit = menu_emit.clone();
                                         let menu_article = article.clone();
+                                        let list_entity_for_article = list_entity.clone();
                                         v_flex()
                                             .id(("article-row", id as u64))
                                             .h(px(80.))
@@ -184,17 +174,22 @@ impl ArticleList {
                                             })
                                             .hover(|style| style.bg(cx.theme().list_hover))
                                             .on_click(move |_, _, cx| {
-                                                owner.update(cx, |this, cx| {
-                                                    this.open_article(id, cx)
-                                                });
+                                                let _ =
+                                                    list_entity_for_article.update(cx, |_, cx| {
+                                                        cx.emit(
+                                                            super::ArticleListEvent::SelectArticle(
+                                                                id,
+                                                            ),
+                                                        );
+                                                    });
                                             })
                                             .context_menu(move |menu, window, cx| {
-                                                ReaderWindow::article_context_menu(
+                                                super::super::context_menus::article_context_menu(
                                                     menu,
                                                     window,
                                                     cx,
                                                     &menu_article,
-                                                    &menu_app,
+                                                    &menu_emit,
                                                     language,
                                                     false,
                                                 )

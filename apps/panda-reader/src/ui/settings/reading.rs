@@ -180,7 +180,7 @@ impl Settings {
                             .on_change(cx.listener(|this, checked, _, cx| {
                                 this.preferences.paragraph_indent = *checked;
                                 this.save_preferences();
-                                if this.reader.article.is_some() {
+                                if this.read_article_reader(cx, |reader| reader.article.is_some()) {
                                     this.request_prepared_body(cx);
                                 }
                                 cx.notify();

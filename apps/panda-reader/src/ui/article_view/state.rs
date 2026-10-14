@@ -1,9 +1,33 @@
+use crate::app::preferences::Preferences;
 use crate::request_epoch::RequestEpoch;
+use crate::ui::context_menus::PaneMenuEvent;
 use gpui_kit::*;
-use panda_core::{Article, TranslationLayout};
+use panda_core::{Article, MarkField, TranslationLayout};
+use panda_translate::TranslatorConfig;
 
-#[derive(Default)]
+#[derive(Clone, Debug)]
+pub(in crate::ui) enum ArticleViewEvent {
+    Mark {
+        article_id: i64,
+        field: MarkField,
+        value: bool,
+    },
+    ToggleHideImages,
+    ExtractFullText(i64),
+    ToggleTranslation(i64),
+    ToggleTranslationLayout,
+    ShareArticle,
+    SelectFeed(i64),
+    SaveReadingProgress,
+    OpenImage(usize),
+}
+
+impl EventEmitter<ArticleViewEvent> for ArticleView {}
+impl EventEmitter<PaneMenuEvent> for ArticleView {}
+
 pub(in crate::ui) struct ArticleView {
+    pub(in crate::ui) preferences: Preferences,
+    pub(in crate::ui) translator_config: TranslatorConfig,
     pub(in crate::ui) article: Option<Article>,
     pub(in crate::ui) body_html: SharedString,
     pub(in crate::ui) body_markdown: SharedString,
@@ -23,6 +47,51 @@ pub(in crate::ui) struct ArticleView {
 }
 
 impl ArticleView {
+    pub(in crate::ui) fn new(
+        preferences: Preferences,
+        translator_config: TranslatorConfig,
+    ) -> Self {
+        Self {
+            preferences,
+            translator_config,
+            article: None,
+            body_html: SharedString::default(),
+            body_markdown: SharedString::default(),
+            image_urls: Vec::new(),
+            image_viewer_url: None,
+            scroll: ScrollHandle::new(),
+            restore_progress: None,
+            progress_epoch: 0,
+            showing_translation: false,
+            translating_article_id: None,
+            translation_incomplete: false,
+            request_epoch: RequestEpoch::default(),
+            translation_epoch: RequestEpoch::default(),
+            translation_spinner_frame: 0,
+            is_extracting: false,
+            requested_article_id: None,
+        }
+    }
+
+    pub(in crate::ui) fn presentation_matches(
+        &self,
+        preferences: &Preferences,
+        translator_config: &TranslatorConfig,
+    ) -> bool {
+        let current = &self.preferences;
+        current.language == preferences.language
+            && current.translation_language == preferences.translation_language
+            && current.translation_layout == preferences.translation_layout
+            && current.hide_images == preferences.hide_images
+            && current.paragraph_indent == preferences.paragraph_indent
+            && current.reader_font_family == preferences.reader_font_family
+            && current.reader_font_size == preferences.reader_font_size
+            && current.reader_line_height == preferences.reader_line_height
+            && current.reader_paragraph_spacing == preferences.reader_paragraph_spacing
+            && current.reader_content_width == preferences.reader_content_width
+            && self.translator_config.revision_cache_id() == translator_config.revision_cache_id()
+    }
+
     pub(in crate::ui) fn has_translation_for_ui(
         &self,
         article: &Article,
