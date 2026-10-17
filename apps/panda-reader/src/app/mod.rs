@@ -94,9 +94,18 @@ pub fn run() {
                     Cow::Borrowed(include_bytes!("../../assets/fonts/Inter-Regular.ttf")),
                     Cow::Borrowed(include_bytes!("../../assets/fonts/Inter-Medium.ttf")),
                     Cow::Borrowed(include_bytes!("../../assets/fonts/Inter-SemiBold.ttf")),
-                    Cow::Borrowed(include_bytes!("../../assets/fonts/NotoSansSC-VF.ttf")),
+                    Cow::Borrowed(include_bytes!(
+                        "../../assets/fonts/PandaReaderCJK-Regular.ttf"
+                    )),
                 ])
                 .expect("failed to load bundled fonts");
+            let cjk_font_id = cx.text_system().resolve_font(&font("Panda Reader CJK"));
+            assert!(
+                cx.text_system()
+                    .get_font_for_id(cjk_font_id)
+                    .is_some_and(|face| face.family.as_ref() == "Panda Reader CJK"),
+                "failed to resolve bundled CJK fallback family"
+            );
             ui::theme::apply_theme(&preferences.theme, cx);
             ui::bind_keys(cx);
             let image_client = reqwest_client::ReqwestClient::user_agent("PandaReader/0.1")
