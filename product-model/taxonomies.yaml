@@ -1,0 +1,5 @@
+scenarioKinds:
+  - {"id": "primary", "name": "Primary", "description": "The usual successful path."}
+  - {"id": "alternate", "name": "Alternate", "description": "Another supported route to a successful result."}
+  - {"id": "validation", "name": "Validation", "description": "Input or a missing prerequisite stops the requested operation."}
+  - {"id": "edge", "name": "Edge", "description": "A failure, conflict or outside service changes the result."}
